@@ -1,0 +1,78 @@
+# Local development stack (spec §29.1).
+#   make up      → start everything
+#   make down    → stop
+# The web app runs on the host (`pnpm --filter @qd/web dev`).
+# Monero services (monerod regtest) arrive with Milestone 5.
+name: qd-wallet
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: qd
+      POSTGRES_PASSWORD: qd-dev-only
+      POSTGRES_DB: qdwallet
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qd -d qdwallet"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      retries: 20
+
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:stable
+    entrypoint: ["anvil", "--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337", "--block-time", "1"]
+    ports: ["127.0.0.1:8545:8545"]
+
+  wallet-api:
+    build:
+      context: ./services/wallet-api
+    env_file: [.env]
+    environment:
+      APP_ENV: development
+      STORE: postgres
+      DATABASE_URL: postgres://qd:qd-dev-only@postgres:5432/qdwallet?sslmode=disable
+      MIGRATE_ON_START: "true"
+      REDIS_URL: redis://redis:6379/0
+      EVM_RPC_31337: anvil=http://anvil:8545
+      HISTORY_PROVIDER_31337: scanner
+      ALLOWED_ORIGINS: http://localhost:3000
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports: ["127.0.0.1:8080:8080", "127.0.0.1:9090:9090"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      anvil: { condition: service_started }
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes: ["./infrastructure/docker/otel-collector.yaml:/etc/otelcol/config.yaml:ro"]
+    ports: ["127.0.0.1:4318:4318"]
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes: ["./infrastructure/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["127.0.0.1:9091:9090"]
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes: ["./infrastructure/docker/grafana:/etc/grafana/provisioning:ro"]
+    ports: ["127.0.0.1:3001:3000"]
+    depends_on: [prometheus]
+
+volumes:
+  pgdata:

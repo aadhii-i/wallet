@@ -1,0 +1,603 @@
+openapi: 3.1.0
+info:
+  title: QD Wallet API
+  version: 1.0.0-draft
+  description: |
+    Non-custodial wallet backend. The API never receives recovery phrases, seeds,
+    private keys, vault passwords, PINs or client key shares. See
+    docs/architecture/qd-wallet-v1-technical-spec.md §9.5.
+
+    ## Encoding conventions
+    - Binary values (keys, nonces, signatures) are **base64url without padding**.
+    - Amounts are **decimal strings in base units** (wei, piconero). Never numbers.
+    - Timestamps are RFC 3339 UTC strings.
+    - Errors are RFC 9457 `application/problem+json` with a stable `code`.
+
+    ## Authentication (spec §22)
+    1. Client creates a P-256 device key (WebCrypto non-extractable / Secure Enclave).
+    2. `POST /v1/auth/challenge` with the SPKI public key → server returns `message`.
+    3. Client signs the UTF-8 bytes of `message` with ECDSA P-256 / SHA-256.
+       Signature format: IEEE P1363 (`r || s`, 64 bytes), base64url.
+    4. `POST /v1/auth/register` (new device) or `/v1/auth/login` (known device).
+
+    `message` format (server-built, client MUST check prefix and origin before signing):
+    `QDWallet-Auth|v1|{origin}|{challengeId}|{nonce}|{issuedAt}`
+    Challenges are single-use and expire after 60 seconds.
+
+    ## Session transport
+    - **Web** (request header `X-QD-Client: web`): server sets cookies
+      `__Host-qd_at` (access, 10 min), `__Host-qd_rt` (refresh, 30 d, Path=/),
+      both `HttpOnly; Secure; SameSite=Strict`. The response body contains
+      `csrfToken` but **no tokens**. Every unsafe request (POST/PUT/PATCH/DELETE)
+      authenticated by cookie MUST send header `X-CSRF-Token: {csrfToken}`; the
+      server compares it (constant time) with the HMAC bound to the session.
+    - **Mobile** (`X-QD-Client: mobile`): body contains `accessToken` and
+      `refreshToken`; requests use `Authorization: Bearer {accessToken}`;
+      refresh sends `{ "refreshToken": "..." }` in the body.
+    Refresh tokens rotate on every use. Reuse of a rotated token revokes the whole
+    token family and records a `refresh_token_reuse` security event.
+servers:
+  - url: http://localhost:8080
+    description: Local development
+tags:
+  - name: auth
+  - name: devices
+  - name: wallets
+  - name: chain
+  - name: transactions
+  - name: security
+  - name: public
+paths:
+  /v1/auth/challenge:
+    post:
+      tags: [auth]
+      operationId: createChallenge
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [devicePublicKey]
+              properties:
+                devicePublicKey: { type: string, description: "base64url SPKI DER, P-256" }
+      responses:
+        "200":
+          description: Challenge issued
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Challenge" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+  /v1/auth/register:
+    post:
+      tags: [auth]
+      operationId: register
+      description: Registers a new device and a new user. Fails with 409 DEVICE_EXISTS if the key is known.
+      parameters: [{ $ref: "#/components/parameters/ClientType" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, signature, platform]
+              properties:
+                challengeId: { type: string }
+                signature: { type: string }
+                platform: { type: string, enum: [web, ios, android] }
+                label: { type: string, maxLength: 64 }
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "401": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      parameters: [{ $ref: "#/components/parameters/ClientType" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [challengeId, signature]
+              properties:
+                challengeId: { type: string }
+                signature: { type: string }
+      responses:
+        "200":
+          description: Session created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Problem" }
+  /v1/auth/refresh:
+    post:
+      tags: [auth]
+      operationId: refresh
+      parameters: [{ $ref: "#/components/parameters/ClientType" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                refreshToken: { type: string, description: "Mobile only" }
+      responses:
+        "200":
+          description: Rotated session
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Problem" }
+  /v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "204": { description: Session revoked }
+  /v1/me:
+    get:
+      tags: [auth]
+      operationId: me
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Current principal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [userId, deviceId]
+                properties:
+                  userId: { type: string, format: uuid }
+                  deviceId: { type: string, format: uuid }
+        "401": { $ref: "#/components/responses/Problem" }
+
+  /v1/devices:
+    get:
+      tags: [devices]
+      operationId: listDevices
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Devices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices: { type: array, items: { $ref: "#/components/schemas/Device" } }
+  /v1/devices/{deviceId}:
+    parameters:
+      - { name: deviceId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [devices]
+      operationId: renameDevice
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties: { label: { type: string, maxLength: 64 } }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Device" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+    delete:
+      tags: [devices]
+      operationId: revokeDevice
+      description: Revokes the device and all its sessions.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "204": { description: Revoked }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /v1/wallets:
+    get:
+      tags: [wallets]
+      operationId: listWallets
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Wallets with accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [wallets]
+                properties:
+                  wallets: { type: array, items: { $ref: "#/components/schemas/Wallet" } }
+    post:
+      tags: [wallets]
+      operationId: createWallet
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label]
+              properties: { label: { type: string, maxLength: 64 } }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Wallet" } } } }
+  /v1/wallets/{walletId}/accounts:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [wallets]
+      operationId: createAccount
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [hdIndex, name]
+              properties:
+                hdIndex: { type: integer, minimum: 0, maximum: 2147483647 }
+                name: { type: string, maxLength: 64 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Account" } } } }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/accounts/{accountId}:
+    parameters:
+      - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+    patch:
+      tags: [wallets]
+      operationId: updateAccount
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, maxLength: 64 }
+                hidden: { type: boolean }
+      responses:
+        "200": { description: Updated, content: { application/json: { schema: { $ref: "#/components/schemas/Account" } } } }
+  /v1/accounts/{accountId}/addresses:
+    parameters:
+      - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [wallets]
+      operationId: registerAddress
+      description: |
+        Registers a public EVM address for history/notifications. `proof` is an
+        EIP-191 personal_sign signature (0x-hex, 65 bytes) over the exact message
+        `QDWallet-Address|v1|{accountId}|{address-lowercase}|{userId}`.
+        Monero addresses are never registered (ADR-006).
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [networkFamily, address, proof]
+              properties:
+                networkFamily: { type: string, enum: [evm] }
+                address: { type: string, pattern: "^0x[0-9a-fA-F]{40}$" }
+                proof: { type: string, pattern: "^0x[0-9a-fA-F]{130}$" }
+      responses:
+        "200": { description: Registered, content: { application/json: { schema: { $ref: "#/components/schemas/Address" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+  /v1/accounts/{accountId}/activity:
+    parameters:
+      - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: network, in: query, required: true, schema: { type: string } }
+      - { name: cursor, in: query, schema: { type: string } }
+      - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+    get:
+      tags: [transactions]
+      operationId: accountActivity
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Page of activity for the account's registered addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
+                  nextCursor: { type: string }
+
+  /v1/rpc/evm/{chainId}:
+    parameters:
+      - { name: chainId, in: path, required: true, schema: { type: integer } }
+    post:
+      tags: [chain]
+      operationId: evmRpc
+      description: |
+        JSON-RPC 2.0 proxy. Single or batch (max 20). Only allowlisted methods
+        (spec §25.3); others return JSON-RPC error -32601. `eth_getLogs` ranges are
+        capped at 2000 blocks. Provider credentials are never exposed.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "200": { description: JSON-RPC response(s), content: { application/json: { schema: {} } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "429": { $ref: "#/components/responses/Problem" }
+
+  /v1/transactions:
+    post:
+      tags: [transactions]
+      operationId: trackTransaction
+      description: Registers a client-broadcast transaction for status tracking.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [networkId, hash, accountId, from, to, assetId, amount]
+              properties:
+                networkId: { type: string }
+                hash: { type: string, pattern: "^0x[0-9a-fA-F]{64}$" }
+                accountId: { type: string, format: uuid }
+                from: { type: string }
+                to: { type: string }
+                assetId: { type: string }
+                amount: { type: string, pattern: "^[0-9]{1,78}$" }
+                nonce: { type: integer }
+      responses:
+        "201": { description: Tracking, content: { application/json: { schema: { $ref: "#/components/schemas/Transaction" } } } }
+  /v1/transactions/{transactionId}:
+    parameters:
+      - { name: transactionId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [transactions]
+      operationId: getTransaction
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: Transaction, content: { application/json: { schema: { $ref: "#/components/schemas/Transaction" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+
+  /v1/security/events:
+    get:
+      tags: [security]
+      operationId: listSecurityEvents
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Security events, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events: { type: array, items: { $ref: "#/components/schemas/SecurityEvent" } }
+  /v1/security/client-events:
+    post:
+      tags: [security]
+      operationId: reportClientEvent
+      description: Client-reported security events. Allowlisted types only; no free text.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [phrase_revealed, unlock_failed_burst, wallet_created, wallet_imported, wallet_wiped, backup_verified]
+      responses:
+        "202": { description: Accepted }
+
+  /v1/networks:
+    get:
+      tags: [public]
+      operationId: listNetworks
+      responses:
+        "200":
+          description: Networks enabled on this server
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [networks]
+                properties:
+                  networks: { type: array, items: { $ref: "#/components/schemas/Network" } }
+  /v1/prices:
+    get:
+      tags: [public]
+      operationId: getPrices
+      parameters:
+        - { name: ids, in: query, required: true, schema: { type: string }, description: "comma-separated priceRef ids (max 50)" }
+      responses:
+        "200":
+          description: USD prices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [prices]
+                properties:
+                  prices:
+                    type: object
+                    additionalProperties: { type: object, required: [usd], properties: { usd: { type: string } } }
+                  updatedAt: { type: string, format: date-time }
+  /healthz:
+    get: { tags: [public], operationId: healthz, responses: { "200": { description: Alive } } }
+  /readyz:
+    get: { tags: [public], operationId: readyz, responses: { "200": { description: Ready }, "503": { description: Not ready } } }
+
+components:
+  securitySchemes:
+    cookieAuth: { type: apiKey, in: cookie, name: __Host-qd_at }
+    bearerAuth: { type: http, scheme: bearer }
+  parameters:
+    ClientType:
+      name: X-QD-Client
+      in: header
+      required: true
+      schema: { type: string, enum: [web, mobile] }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema: { type: string, maxLength: 128 }
+  responses:
+    Problem:
+      description: Problem details
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Problem:
+      type: object
+      required: [title, status, code]
+      properties:
+        type: { type: string }
+        title: { type: string }
+        status: { type: integer }
+        code: { type: string }
+        detail: { type: string }
+        requestId: { type: string }
+    Challenge:
+      type: object
+      required: [challengeId, nonce, message, expiresAt]
+      properties:
+        challengeId: { type: string }
+        nonce: { type: string }
+        message: { type: string }
+        expiresAt: { type: string, format: date-time }
+    Session:
+      type: object
+      required: [userId, deviceId, accessExpiresAt]
+      properties:
+        userId: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid }
+        accessExpiresAt: { type: string, format: date-time }
+        csrfToken: { type: string, description: web only }
+        accessToken: { type: string, description: mobile only }
+        refreshToken: { type: string, description: mobile only }
+    Device:
+      type: object
+      required: [id, platform, label, createdAt, lastSeenAt, current]
+      properties:
+        id: { type: string, format: uuid }
+        platform: { type: string, enum: [web, ios, android] }
+        label: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastSeenAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }
+        current: { type: boolean }
+    Wallet:
+      type: object
+      required: [id, label, defaultSigningMode, accounts, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        defaultSigningMode: { type: string, enum: [hd, mpc, qd] }
+        accounts: { type: array, items: { $ref: "#/components/schemas/Account" } }
+        createdAt: { type: string, format: date-time }
+    Account:
+      type: object
+      required: [id, walletId, name, signingMode, hidden, addresses]
+      properties:
+        id: { type: string, format: uuid }
+        walletId: { type: string, format: uuid }
+        hdIndex: { type: integer }
+        name: { type: string }
+        signingMode: { type: string, enum: [hd, mpc, qd] }
+        hidden: { type: boolean }
+        addresses: { type: array, items: { $ref: "#/components/schemas/Address" } }
+    Address:
+      type: object
+      required: [id, networkFamily, address]
+      properties:
+        id: { type: string, format: uuid }
+        networkFamily: { type: string, enum: [evm] }
+        address: { type: string }
+    Network:
+      type: object
+      required: [id, family, name, kind, nativeSymbol, nativeDecimals]
+      properties:
+        id: { type: string }
+        family: { type: string, enum: [evm, monero] }
+        chainId: { type: integer }
+        name: { type: string }
+        kind: { type: string, enum: [mainnet, testnet, local] }
+        nativeSymbol: { type: string }
+        nativeDecimals: { type: integer }
+    Transaction:
+      type: object
+      required: [id, networkId, hash, from, to, assetId, amount, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        networkId: { type: string }
+        hash: { type: string }
+        from: { type: string }
+        to: { type: string }
+        assetId: { type: string }
+        amount: { type: string }
+        fee: { type: string }
+        nonce: { type: integer }
+        status: { type: string, enum: [pending, confirmed, failed, replaced, dropped] }
+        blockNumber: { type: integer }
+        createdAt: { type: string, format: date-time }
+        events:
+          type: array
+          items:
+            type: object
+            required: [toStatus, observedAt]
+            properties:
+              fromStatus: { type: string }
+              toStatus: { type: string }
+              observedAt: { type: string, format: date-time }
+    ActivityItem:
+      type: object
+      required: [hash, networkId, direction, from, to, assetId, amount, status, timestamp, flags]
+      properties:
+        hash: { type: string }
+        networkId: { type: string }
+        direction: { type: string, enum: [in, out, self] }
+        from: { type: string }
+        to: { type: string }
+        assetId: { type: string }
+        amount: { type: string }
+        fee: { type: string }
+        status: { type: string, enum: [pending, confirmed, failed, replaced, dropped] }
+        blockNumber: { type: integer }
+        timestamp: { type: string, format: date-time }
+        flags: { type: array, items: { type: string, enum: [suspected_poisoning] } }
+    SecurityEvent:
+      type: object
+      required: [id, type, severity, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        severity: { type: string, enum: [info, warning, critical] }
+        deviceId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        metadata: { type: object }

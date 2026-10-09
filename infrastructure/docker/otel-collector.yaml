@@ -1,0 +1,22 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  batch: {}
+  # Defence in depth: strip attributes that must never leave the service (spec §26.2).
+  attributes/redact:
+    actions:
+      - { key: http.request.header.authorization, action: delete }
+      - { key: http.request.header.cookie, action: delete }
+      - { key: http.request.body, action: delete }
+exporters:
+  debug:
+    verbosity: basic
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [attributes/redact, batch]
+      exporters: [debug]

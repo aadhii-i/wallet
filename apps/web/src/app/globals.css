@@ -1,0 +1,162 @@
+@import 'tailwindcss';
+
+/* Tokens mirror packages/ui (lightTheme / darkTheme). */
+:root {
+  --qd-bg: #f5f7fa;
+  --qd-bg-elevated: #ffffff;
+  --qd-bg-sunken: #e9edf3;
+  --qd-surface: #ffffff;
+  --qd-surface-hover: #f5f7fa;
+  --qd-border: #d3d9e4;
+  --qd-border-strong: #aeb8cb;
+  --qd-text: #070b14;
+  --qd-text-muted: #3a4763;
+  --qd-text-subtle: #5a6782;
+  --qd-primary: #00897a;
+  --qd-primary-hover: #00a594;
+  --qd-primary-text: #ffffff;
+  --qd-primary-soft: #d4fbf6;
+  --qd-success: #12a150;
+  --qd-success-soft: #dcf7e6;
+  --qd-warning: #c98a00;
+  --qd-warning-soft: #fff1cc;
+  --qd-danger: #d0343a;
+  --qd-danger-soft: #fde2e3;
+  --qd-focus: #7c5cff;
+  --qd-overlay: rgba(7, 11, 20, 0.48);
+  --qd-glow: radial-gradient(1200px 600px at 50% -200px, rgba(0, 194, 174, 0.14), transparent 70%);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --qd-bg: #070b14;
+    --qd-bg-elevated: #0c1220;
+    --qd-bg-sunken: #05080f;
+    --qd-surface: #0c1220;
+    --qd-surface-hover: #111a2c;
+    --qd-border: #172238;
+    --qd-border-strong: #23304a;
+    --qd-text: #f5f7fa;
+    --qd-text-muted: #aeb8cb;
+    --qd-text-subtle: #8390aa;
+    --qd-primary: #2ddbc8;
+    --qd-primary-hover: #6feadd;
+    --qd-primary-text: #070b14;
+    --qd-primary-soft: rgba(45, 219, 200, 0.14);
+    --qd-success: #1db954;
+    --qd-success-soft: rgba(29, 185, 84, 0.16);
+    --qd-warning: #f2a900;
+    --qd-warning-soft: rgba(242, 169, 0, 0.16);
+    --qd-danger: #ef4a50;
+    --qd-danger-soft: rgba(239, 74, 80, 0.16);
+    --qd-focus: #9a82ff;
+    --qd-overlay: rgba(0, 0, 0, 0.6);
+    --qd-glow: radial-gradient(1200px 600px at 50% -200px, rgba(45, 219, 200, 0.12), transparent 70%);
+    color-scheme: dark;
+  }
+}
+
+@theme inline {
+  --color-canvas: var(--qd-bg);
+  --color-elevated: var(--qd-bg-elevated);
+  --color-sunken: var(--qd-bg-sunken);
+  --color-surface: var(--qd-surface);
+  --color-surface-hover: var(--qd-surface-hover);
+  --color-line: var(--qd-border);
+  --color-line-strong: var(--qd-border-strong);
+  --color-ink: var(--qd-text);
+  --color-muted: var(--qd-text-muted);
+  --color-subtle: var(--qd-text-subtle);
+  --color-primary: var(--qd-primary);
+  --color-primary-hover: var(--qd-primary-hover);
+  --color-on-primary: var(--qd-primary-text);
+  --color-primary-soft: var(--qd-primary-soft);
+  --color-success: var(--qd-success);
+  --color-success-soft: var(--qd-success-soft);
+  --color-warning: var(--qd-warning);
+  --color-warning-soft: var(--qd-warning-soft);
+  --color-danger: var(--qd-danger);
+  --color-danger-soft: var(--qd-danger-soft);
+  --color-focus: var(--qd-focus);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: var(--font-jetbrains), ui-monospace, Menlo, monospace;
+  --radius-card: 16px;
+  --radius-control: 12px;
+}
+
+html,
+body {
+  background: var(--qd-bg);
+  color: var(--qd-text);
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-image: var(--qd-glow);
+  background-repeat: no-repeat;
+  min-height: 100dvh;
+}
+
+/* Always-visible, theme-aware focus ring (Appendix A.5). */
+/* :where() keeps specificity at 0 so fields inside focus-within containers can opt out. */
+:where(:focus-visible) {
+  outline: 2px solid var(--qd-focus);
+  outline-offset: 2px;
+  border-radius: 10px;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'cv11' 1;
+}
+
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--qd-bg-sunken);
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  animation: qd-shimmer 1.2s infinite;
+}
+@keyframes qd-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+/* Reduce motion: keep short fades, drop movement (Appendix A.3). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 120ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+.phrase-blur {
+  filter: blur(8px);
+  user-select: none;
+}
+
+/* Text fields sit inside bordered containers that highlight via focus-within. */
+input:focus-visible,
+textarea:focus-visible {
+  outline: none;
+}

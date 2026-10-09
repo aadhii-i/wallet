@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4 # TODO(M8): pin all actions by commit SHA (spec §28)
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r typecheck
+      - name: Install Anvil
+        uses: foundry-rs/foundry-toolchain@v1
+      - name: Unit + Anvil integration tests
+        run: |
+          anvil --port 8545 --chain-id 31337 --silent &
+          sleep 2
+          ANVIL_RPC_URL=http://127.0.0.1:8545 pnpm -r test
+
+  go:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    defaults: { run: { working-directory: services/wallet-api } }
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_USER: qd, POSTGRES_PASSWORD: qd, POSTGRES_DB: qd }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U qd" --health-interval 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26", cache-dependency-path: services/wallet-api/go.sum }
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go test -race ./...
+        env:
+          TEST_DATABASE_URL: postgres://qd:qd@localhost:5432/qd?sslmode=disable
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  e2e:
+    needs: [typescript, go]
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.26", cache-dependency-path: services/wallet-api/go.sum }
+      - uses: foundry-rs/foundry-toolchain@v1
+      - run: corepack enable && pnpm install --frozen-lockfile
+      - run: cp apps/web/.env.example apps/web/.env.local && pnpm --filter @qd/web build
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: Start Anvil and wallet-api
+        run: |
+          anvil --port 8545 --chain-id 31337 --silent &
+          cd services/wallet-api && CGO_ENABLED=0 go build -o /tmp/wallet-api ./cmd/wallet-api
+          APP_ENV=development STORE=memory COOKIE_SECURE=false ALLOWED_ORIGINS=http://localhost:3100 \
+            EVM_RPC_31337=anvil=http://127.0.0.1:8545 PRICE_PROVIDER=static /tmp/wallet-api &
+          sleep 3
+      - run: npx playwright test
+        working-directory: apps/web
+        env:
+          ANVIL_RPC_URL: http://127.0.0.1:8545
+          E2E_API_URL: http://localhost:8080
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with: { name: playwright-traces, path: apps/web/test-results }
+
+  security:
+    runs-on: ubuntu-latest
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
+      - uses: google/osv-scanner-action/osv-scanner-action@v1
+        with:
+          scan-args: --recursive ./

@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+dist/
+coverage/
+.turbo/
+*.log
+.env
+.env.*
+!.env.example
+/test-results/
+/playwright-report/
+services/wallet-api/bin/
+services/wallet-api/tmp/
+.dev-keys/

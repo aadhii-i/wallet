@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Hot loops index Float64Arrays by construction-checked offsets; the
+    // `| undefined` that noUncheckedIndexedAccess adds would only add noise.
+    "noUncheckedIndexedAccess": false
+  },
+  "include": ["src", "test", "bench"]
+}

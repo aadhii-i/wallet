@@ -1,0 +1,25 @@
+{
+  "name": "@qd/evm",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@qd/blockchain": "workspace:*",
+    "@qd/shared-types": "workspace:*",
+    "@qd/wallet-core": "workspace:*",
+    "viem": "2.56.8"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vitest": "5.0.1",
+    "@types/node": "24.13.6"
+  }
+}
