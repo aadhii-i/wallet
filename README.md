@@ -14,7 +14,7 @@ A non-custodial, multi-chain wallet (Ethereum / EVM now, Monero and QD/MPC signi
 |---|---|
 | M0 Spec, ADRs, API contract, schema | ✅ |
 | M1 Wallet core (BIP-39, BIP-32/44, encrypted vault, HD signer) | ✅ tested against official vectors and viem |
-| M2 Ethereum: balances, fees, send, receive, history, tracking | ✅ verified end-to-end on Anvil |
+| M2 Ethereum: balances, fees, send, receive, history, tracking | ✅ verified end-to-end on Anvil; 🚧 Ethereum Sepolia connected (see [below](#ethereum-sepolia-testnet)) |
 | M3 Web wallet (Next.js) | ✅ onboarding, backup, import, unlock, accounts, networks, send/receive, activity, security, settings |
 | M4 Mobile (Expo) | ⏳ not started |
 | M5 Monero | ⏳ blocked on ADR 0006/0007 spike |
@@ -53,6 +53,38 @@ Import the Anvil test phrase `test test test test test test test test test test 
 
 With Docker: `cp .env.example .env && make up` starts Postgres, Redis, Anvil, wallet-api, the OTel collector, Prometheus and Grafana.
 
+## Ethereum Sepolia testnet
+
+The wallet can run against the public Sepolia testnet (chain id `11155111`) via an Alchemy endpoint. The browser never sees the provider URL: it talks to wallet-api's authenticated RPC proxy, which reads the upstream from the server-side environment.
+
+```bash
+cp .env.example .env    # gitignored; never commit it
+# then set your own key in .env:
+# EVM_RPC_11155111=alchemy=https://eth-sepolia.g.alchemy.com/v2/<YOUR_ALCHEMY_API_KEY>
+make api                # terminal 1 — picks up EVM_RPC_11155111 from .env
+make web                # terminal 2 — http://localhost:3000
+```
+
+In the app, choose **Ethereum Sepolia** in the network selector. Under the balance you should see `Ethereum Sepolia · #<latest block>`, which updates every ~15 s. To get test ETH, open **Receive**, copy the address and use the [Alchemy Sepolia faucet](https://www.alchemy.com/faucets/ethereum-sepolia). Transactions link to [sepolia.etherscan.io](https://sepolia.etherscan.io/).
+
+**Signing:** Ethereum transactions are signed with the conventional BIP-32/44 secp256k1 ECDSA signer (`HDSigner`, MetaMask-compatible path `m/44'/60'/0'/0/n`) inside the KeyWorker. The QD threshold signer in `packages/qd-crypto` is **not** used for Ethereum transactions. A Threshold Raccoon signature is not a valid signature for an ordinary Ethereum account; using it needs a smart-contract account with an on-chain verifier (M7).
+
+### Sepolia progress
+
+| Item | Status |
+|---|---|
+| Network config (chain id, explorer, faucet link) | ✅ unit-tested |
+| RPC key server-side only (`EVM_RPC_11155111` in `.env`) | ✅ not in source, build output or git history |
+| Connection check: latest block and chain-id verification before balances and before signing | ✅ unit-tested; RPC reachable and reports `0xaa36a7` |
+| wallet-api disables an upstream whose `eth_chainId` doesn't match its configured chain | 🚧 written with tests, not yet compiled or run (Go not installed on the dev machine) |
+| Real ETH balance, receive screen with copy and faucet guidance | ✅ implemented; build passes |
+| Send: gas-limit bug fixed (see below) | 🚧 fix verified by a live dry run (`eth_call`); a successful live send is still to be confirmed |
+| Sepolia transaction history from the backend | ⏳ off by default; set `HISTORY_PROVIDER_11155111=alchemy` to enable |
+
+### Fixed: native transfers to new accounts failed out of gas
+
+The first two Sepolia sends (`0x9343eeea…2d64e`, `0xd447a5b5…cadad4`) were mined with status `failed`, a gas limit of 21,000 and all of it used. The EVM adapter skipped `eth_estimateGas` for any recipient without contract code and hardcoded 21,000 gas. On Sepolia today, a transfer that creates a never-used account costs ~207,000 gas (a transfer to an existing account costs ~12,000), so 21,000 is not a safe constant. The adapter now always asks the node for an estimate, adds a 20% margin and floors the result at 21,000. A failed estimate stops the send instead of guessing. Regression tests are in `packages/evm/test/evm.test.ts`.
+
 ## Tests
 
 ```bash
@@ -62,6 +94,8 @@ make test-go                                            # Go unit tests
 pnpm --filter @qd/web build && make e2e                 # Playwright (desktop + mobile)
 E2E_API_URL=http://localhost:8080 make e2e              # include the full-stack suite
 ```
+
+Known issue: `pnpm -r test` stops at `apps/web`, whose vitest run picks up the Playwright `e2e/*.spec.ts` files and fails. Run the package tests with `pnpm -r --filter "./packages/*" test`. There is no lint script yet.
 
 ## Security model in one paragraph
 
