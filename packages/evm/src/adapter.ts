@@ -366,12 +366,12 @@ export class EvmAdapter implements BlockchainAdapter<EvmUnsignedTx, EvmFeeParams
   }
 
   private async estimateGas(intent: TransferIntent, call: { to: Hex; value: bigint; data?: Hex }): Promise<bigint> {
-    if (intent.asset.kind === 'native') {
-      const code = await this.client.getCode({ address: call.to });
-      if (!code || code === '0x') return GAS_LIMIT_MIN; // plain EOA transfer: exactly 21k
-    }
+    // Always ask the node, even for plain transfers to codeless addresses: 21000 is not
+    // a protocol constant (Sepolia charges ~207k to fund a never-used account).
     const est = await this.client.estimateGas({ account: getAddress(intent.from), ...call });
-    return (est * 12n) / 10n;
+    const padded = (est * 12n) / 10n;
+    // Unused gas is refunded, so flooring costs nothing and keeps the sanity bound below.
+    return padded < GAS_LIMIT_MIN ? GAS_LIMIT_MIN : padded;
   }
 }
 

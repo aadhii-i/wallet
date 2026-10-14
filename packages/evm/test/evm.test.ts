@@ -57,11 +57,10 @@ describe('EvmAdapter (unit)', () => {
     expect(a.validateAddress(' ' + A1 + ' ').valid).toBe(true);
   });
 
-  it('uses exactly 21000 gas for EOA transfers and orders fee tiers', async () => {
-    const { transport, calls } = fakeNode();
+  it('floors native transfer gas at 21000 and orders fee tiers', async () => {
+    const { transport } = fakeNode({ eth_estimateGas: () => '0x2ee0' }); // node says 12000
     const a = new EvmAdapter({ network: mainnet, transport });
     const q = await a.estimateFee(intentNative());
-    expect(calls).not.toContain('eth_estimateGas');
     expect(q.options.market.params.gas).toBe(21000n);
     expect(q.options.market.params.maxPriorityFeePerGas).toBe(parseGwei('1'));
     expect(q.options.market.params.maxFeePerGas).toBe(parseGwei('41'));
@@ -175,13 +174,38 @@ describe('EvmAdapter on Ethereum Sepolia (unit)', () => {
     expect(await a.getBalance(A0)).toBe(parseEther('0.01'));
   });
 
+  // Regression: tx 0xd447a5b5…cadad4 (and nonce 0 before it) failed out of gas on Sepolia.
+  // A native transfer to a codeless, never-used account was given a fixed 21000 gas,
+  // but the network charged 207391 to create the recipient account.
+  it('estimates gas for native transfers to codeless new accounts instead of assuming 21000', async () => {
+    const { transport, calls } = fakeNode({ eth_getCode: () => '0x', eth_estimateGas: () => '0x32a1f' });
+    const a = new EvmAdapter({ network: sepolia, transport });
+    const intent: TransferIntent = { from: A0, to: A1, asset: assetsForNetwork(sepolia)[0]!, amount: parseEther('0.02') };
+    const q = await a.estimateFee(intent);
+    expect(calls).toContain('eth_estimateGas');
+    expect(q.options.market.params.gas).toBe((207_391n * 12n) / 10n);
+    const u = await a.buildTransaction(intent, q.options.market);
+    expect(u.tx.gas).toBeGreaterThan(207_391n);
+  });
+
+  it('fails the quote rather than guessing gas when estimation fails', async () => {
+    const { transport } = fakeNode({
+      eth_estimateGas: () => {
+        throw new Error('out of gas: gas required exceeds: 21000');
+      },
+    });
+    const a = new EvmAdapter({ network: sepolia, transport });
+    const intent: TransferIntent = { from: A0, to: A1, asset: assetsForNetwork(sepolia)[0]!, amount: 1n };
+    await expect(a.estimateFee(intent)).rejects.toThrow(/out of gas/);
+  });
+
   it('builds, signs and assembles a Sepolia transfer with chain id 11155111', async () => {
-    const { transport } = fakeNode({ eth_chainId: () => SEPOLIA_HEX });
+    const { transport } = fakeNode({ eth_chainId: () => SEPOLIA_HEX, eth_estimateGas: () => '0x5208' });
     const a = new EvmAdapter({ network: sepolia, transport });
     const intent: TransferIntent = { from: A0, to: A1, asset: assetsForNetwork(sepolia)[0]!, amount: parseEther('0.001') };
     const q = await a.estimateFee(intent);
     const u = await a.buildTransaction(intent, q.options.market);
-    expect(u.tx).toMatchObject({ chainId: 11155111, nonce: 5, gas: 21000n, value: parseEther('0.001') });
+    expect(u.tx).toMatchObject({ chainId: 11155111, nonce: 5, gas: 25200n, value: parseEther('0.001') });
 
     const signer = new HDSigner(await HDKeyring.fromMnemonic(ANVIL_MNEMONIC));
     const payload = a.signingPayload(u);
