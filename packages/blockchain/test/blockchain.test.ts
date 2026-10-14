@@ -83,3 +83,39 @@ describe('networks & assets', () => {
     expect(isKnownTokenContract('base', '0xA0B86991C6218B36C1D19D4A2E9EB0CE3606EB48')).toBe(false);
   });
 });
+
+describe('Ethereum Sepolia', () => {
+  const registry = createNetworkRegistry({ includeLocal: false });
+  const sepolia = registry.require('sepolia');
+
+  it('is configured as a testnet on chain 11155111 with an 18-decimal native asset', () => {
+    expect(sepolia).toMatchObject({ chainId: 11155111, kind: 'testnet', name: 'Ethereum Sepolia', feeModel: 'eip1559' });
+    expect(sepolia.nativeCurrency.decimals).toBe(18);
+    expect(registry.byChainId(11155111)?.id).toBe('sepolia');
+    // Test ETH has no price, so no fiat value is ever shown for it.
+    expect(sepolia.nativeCurrency.priceRef).toBeUndefined();
+  });
+
+  it('links to Sepolia Etherscan and the Alchemy faucet, never Mainnet', () => {
+    const hash = `0x${'ab'.repeat(32)}`;
+    expect(sepolia.explorer!.txUrl(hash)).toBe(`https://sepolia.etherscan.io/tx/${hash}`);
+    expect(sepolia.explorer!.addressUrl('0x00000000000000000000000000000000000000aa')).toBe(
+      'https://sepolia.etherscan.io/address/0x00000000000000000000000000000000000000aa',
+    );
+    expect(sepolia.faucetUrl).toBe('https://www.alchemy.com/faucets/ethereum-sepolia');
+    expect(registry.require('eth-mainnet').faucetUrl).toBeUndefined();
+  });
+
+  it('has a unique chain id in the registry', () => {
+    expect(EVM_NETWORKS.filter((n) => n.chainId === 11155111)).toHaveLength(1);
+  });
+
+  it('converts between ETH and wei exactly', () => {
+    expect(parseUnits('1', 18)).toBe(10n ** 18n);
+    expect(parseUnits('0.01', 18)).toBe(10_000_000_000_000_000n);
+    expect(parseUnits('0.000000000000000001', 18)).toBe(1n);
+    expect(() => parseUnits('0.0000000000000000001', 18)).toThrow(AmountParseError);
+    expect(formatUnits(1_234_500_000_000_000_000n, 18)).toBe('1.2345');
+    expect(formatUnits(1n, 18)).toBe('0.000000000000000001');
+  });
+});

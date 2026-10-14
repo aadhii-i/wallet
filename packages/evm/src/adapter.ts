@@ -156,6 +156,40 @@ export class EvmAdapter implements BlockchainAdapter<EvmUnsignedTx, EvmFeeParams
     return new Map(entries);
   }
 
+  /**
+   * Connectivity check: the RPC must answer and report the registry chain id.
+   * A custom RPC pointed at another chain would otherwise show that chain's
+   * balances under this network's name.
+   */
+  async getChainStatus(): Promise<{ chainId: number; blockNumber: bigint }> {
+    let chainId: number;
+    let blockNumber: bigint;
+    try {
+      [chainId, blockNumber] = await Promise.all([this.client.getChainId(), this.client.getBlockNumber({ cacheTime: 0 })]);
+    } catch (e) {
+      throw new WalletError({
+        code: 'NETWORK_UNAVAILABLE',
+        userTitle: `Can't reach ${this.network.name}`,
+        userMessage: 'The network is not responding. Check your connection or RPC settings and try again.',
+        fundsMoved: 'no',
+        retryable: true,
+        // Error name only: messages from HTTP transports can embed the RPC URL.
+        technical: e instanceof Error ? e.name : 'unknown',
+      });
+    }
+    if (chainId !== this.network.chainId) {
+      throw new WalletError({
+        code: 'CHAIN_MISMATCH',
+        userTitle: 'Wrong network',
+        userMessage: `The RPC is connected to a different chain than ${this.network.name}. Nothing will be signed or sent.`,
+        fundsMoved: 'no',
+        retryable: false,
+        technical: `expected chainId ${this.network.chainId}, RPC reported ${chainId}`,
+      });
+    }
+    return { chainId, blockNumber };
+  }
+
   async getTransaction(hash: string): Promise<TxLookup | null> {
     const h = hash as Hex;
     const receipt = await this.client.getTransactionReceipt({ hash: h }).catch(() => null);

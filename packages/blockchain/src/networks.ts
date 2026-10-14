@@ -11,6 +11,8 @@ export interface NetworkBase {
   explorer?: { name: string; txUrl: (hash: string) => string; addressUrl: (address: string) => string };
   /** Visual accent token for the network badge (packages/ui). */
   accent: string;
+  /** Testnets only: where to request free test funds. */
+  faucetUrl?: string;
 }
 
 export interface EvmNetwork extends NetworkBase {
@@ -112,6 +114,7 @@ export const EVM_NETWORKS: readonly EvmNetwork[] = [
     confirmationsForFinal: 3,
     feeWarningNative: '0.05',
     accent: 'testnet',
+    faucetUrl: 'https://www.alchemy.com/faucets/ethereum-sepolia',
   },
   {
     id: 'anvil',

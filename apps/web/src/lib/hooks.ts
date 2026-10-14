@@ -32,9 +32,23 @@ export function useHoldings(address: string | undefined) {
     enabled: !!address,
     refetchInterval: 15_000,
     queryFn: async (): Promise<Holding[]> => {
+      // Never show balances from an RPC that serves a different chain.
+      await adapter.getChainStatus();
       const map = await adapter.getAllBalances(address!);
       return adapter.listAssets().map((asset) => ({ asset, balance: map.get(asset.id) ?? null }));
     },
+  });
+}
+
+/** Connectivity, chain id verification and latest block for the selected network. */
+export function useChainStatus() {
+  const adapter = useAdapter();
+  const custom = useMeta((s) => s.customRpc[adapter.network.id]);
+  return useQuery({
+    queryKey: ['chain-status', adapter.network.id, custom ?? 'proxy'],
+    refetchInterval: 15_000,
+    retry: 1,
+    queryFn: () => adapter.getChainStatus(),
   });
 }
 

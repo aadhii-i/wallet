@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import QRCode from 'qrcode';
-import { Share2 } from 'lucide-react';
+import { ExternalLink, Share2 } from 'lucide-react';
 import { useNetwork } from '@/lib/hooks';
 import { useSelectedAccount, toast } from '@/lib/store';
 import { Button } from '../ui/button';
@@ -48,6 +48,18 @@ export function ReceiveSheet({ open, onOpenChange }: { open: boolean; onOpenChan
         <p className="mb-4 rounded-xl bg-warning-soft px-3 py-2 text-[13px] text-ink">
           Only send <strong>{network.name}</strong> assets to this address. Assets sent from other networks may be lost.
         </p>
+        {network.faucetUrl && (
+          <div className="mb-4 w-full rounded-xl bg-primary-soft px-3 py-2 text-left text-[13px] text-ink">
+            <p className="mb-1 font-semibold">Need free test {network.nativeCurrency.symbol}?</p>
+            <p>
+              Copy the address above, paste it into the{' '}
+              <a href={network.faucetUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 font-semibold text-primary hover:underline">
+                {network.shortName} faucet <ExternalLink size={12} />
+              </a>{' '}
+              and request funds. Test funds have no real value. Your balance updates automatically once they arrive.
+            </p>
+          </div>
+        )}
         {typeof navigator !== 'undefined' && 'share' in navigator && (
           <Button
             variant="secondary"

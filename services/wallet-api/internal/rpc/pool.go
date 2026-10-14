@@ -52,6 +52,12 @@ type Provider struct {
 	openedAt         time.Time
 	healthy          bool
 	headBlock        uint64
+	// chainVerified is set once the upstream's eth_chainId matched the pool's
+	// chain; wrongChain once it did not. A wrong-chain provider is never used
+	// again: a Mainnet URL configured under EVM_RPC_11155111 would otherwise
+	// serve Mainnet balances labelled as Sepolia.
+	chainVerified bool
+	wrongChain    bool
 }
 
 func newProvider(name, url string, logger *slog.Logger) *Provider {
@@ -110,6 +116,9 @@ func sanitizeUpstreamErr(err error) error {
 func (p *Provider) allowRequest() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.wrongChain {
+		return false
+	}
 	switch p.state {
 	case circuitOpen:
 		if time.Since(p.openedAt) >= openDuration {
@@ -155,7 +164,15 @@ func (p *Provider) setHealth(healthy bool, head uint64) {
 func (p *Provider) Healthy() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.healthy && p.state != circuitOpen
+	return p.healthy && p.state != circuitOpen && !p.wrongChain
+}
+
+// WrongChain reports whether the upstream answered eth_chainId with a chain
+// other than the one it is configured for.
+func (p *Provider) WrongChain() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.wrongChain
 }
 
 // rpcEnvelope is a minimal JSON-RPC 2.0 request/response envelope.
@@ -263,9 +280,14 @@ func (p *Pool) candidates() []*Provider {
 		}
 	}
 	if len(out) == 0 {
-		// Every circuit is open: still try the first provider so the
-		// system fails loudly rather than refusing all traffic silently.
-		out = p.providers
+		// Every circuit is open: still try the providers so the system
+		// fails loudly rather than refusing all traffic silently -- but
+		// never one serving the wrong chain.
+		for _, prov := range p.providers {
+			if !prov.WrongChain() {
+				out = append(out, prov)
+			}
+		}
 	}
 	return out
 }
@@ -305,6 +327,11 @@ func (p *Pool) checkHealthOnce(ctx context.Context) {
 	var best uint64
 	heads := make(map[*Provider]uint64, len(p.providers))
 	for _, prov := range p.providers {
+		if !p.verifyChain(ctx, prov) {
+			prov.setHealth(false, 0)
+			metrics.RPCProviderHealthy.WithLabelValues(p.chainLabel(), prov.Name).Set(0)
+			continue
+		}
 		req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "eth_blockNumber"}
 		resp, err := prov.call(ctx, p.chainLabel(), req, 3*time.Second)
 		if err != nil || resp.Error != nil {
@@ -333,4 +360,42 @@ func (p *Pool) checkHealthOnce(ctx context.Context) {
 		metrics.RPCProviderHealthy.WithLabelValues(p.chainLabel(), prov.Name).Set(val)
 		metrics.RPCProviderHeadLag.WithLabelValues(p.chainLabel(), prov.Name).Set(float64(lag))
 	}
+}
+
+// verifyChain checks, once per provider, that the upstream's eth_chainId is
+// the chain this pool serves. It returns false while the check has not
+// succeeded (unreachable upstream) or after it found a mismatch.
+func (p *Pool) verifyChain(ctx context.Context, prov *Provider) bool {
+	prov.mu.Lock()
+	verified, wrong := prov.chainVerified, prov.wrongChain
+	prov.mu.Unlock()
+	if wrong {
+		return false
+	}
+	if verified {
+		return true
+	}
+	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "eth_chainId"}
+	resp, err := prov.call(ctx, p.chainLabel(), req, 3*time.Second)
+	if err != nil || resp.Error != nil {
+		prov.recordFailure()
+		return false
+	}
+	var hexID string
+	_ = json.Unmarshal(resp.Result, &hexID)
+	got, ok := parseHexBlock(hexID)
+	prov.mu.Lock()
+	defer prov.mu.Unlock()
+	if !ok || got != uint64(p.chainID) {
+		prov.wrongChain = true
+		// Provider name and chain ids only -- never the URL.
+		prov.logger.Error("rpc upstream serves a different chain; provider disabled",
+			slog.String("provider", prov.Name),
+			slog.String("chain_id", p.chainLabel()),
+			slog.String("upstream_chain_id", hexID),
+		)
+		return false
+	}
+	prov.chainVerified = true
+	return true
 }

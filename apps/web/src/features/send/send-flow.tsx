@@ -459,6 +459,8 @@ function ReviewAndSend(props: {
   const prepare = useCallback(async () => {
     dispatch({ type: 'ESTIMATE' });
     try {
+      // The RPC must serve this network's chain before anything is built or signed.
+      await adapter.getChainStatus();
       const intent = { from, to, asset, amount };
       const quote = await adapter.estimateFee(intent);
       const unsigned = await adapter.buildTransaction(intent, quote.options[tier]);

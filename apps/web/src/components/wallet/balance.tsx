@@ -3,9 +3,9 @@ import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, ExternalLink, Eye, EyeOff, RefreshCw, Repeat } from 'lucide-react';
 import Link from 'next/link';
-import { formatDisplay, formatUsdCents, type Network } from '@qd/blockchain';
+import { formatDisplay, formatUsdCents, isWalletError, type Network } from '@qd/blockchain';
 import { useMeta } from '@/lib/store';
-import type { ValuedHolding } from '@/lib/hooks';
+import { useChainStatus, type ValuedHolding } from '@/lib/hooks';
 import { Skeleton } from '../ui/spinner';
 import { t } from '../ui/motion';
 import { NetworkDot } from './network-sheet';
@@ -60,6 +60,8 @@ export function BalanceHero({
   const hidden = useMeta((s) => s.hideBalances);
   const toggle = useMeta((s) => s.toggleHideBalances);
   const native = valued?.find((h) => h.asset.kind === 'native');
+  const chain = useChainStatus();
+  const chainError = isWalletError(chain.error) ? chain.error : null;
   const showFiat = totalCents !== null && (valued?.some((h) => h.usdCents !== null) ?? false);
   const cents = useCountUp(showFiat ? Number(totalCents) : 0);
 
@@ -71,7 +73,8 @@ export function BalanceHero({
         <span className="text-sm font-normal text-muted">Loading balance...</span>
       </span>
     );
-  else if (error && !valued) primary = <span className="text-2xl font-semibold text-muted">Unable to load {network.shortName} balance</span>;
+  else if (error && !valued)
+    primary = <span className="text-2xl font-semibold text-muted">{chainError?.code === 'CHAIN_MISMATCH' ? 'Wrong network' : `Unable to load ${network.shortName} balance`}</span>;
   else if (hidden) primary = <span aria-label="Balance hidden">••••••</span>;
   else if (showFiat) primary = formatUsdCents(BigInt(Math.round(cents)));
   else primary = `${formatDisplay(native?.balance ?? 0n, native?.asset.decimals ?? 18, 5)} ${nativeSymbol}`;
@@ -100,6 +103,12 @@ export function BalanceHero({
       <div className="mt-2 flex items-center gap-1.5 text-[13px] text-muted">
         <NetworkDot network={network} size={14} />
         <span>{network.name}</span>
+        {chain.data && (
+          <span className="tabular" title="Latest block">
+            · #{chain.data.blockNumber.toLocaleString()}
+          </span>
+        )}
+        {chainError && <span className="text-danger">· {chainError.userTitle}</span>}
         {address && network.explorer && (
           <>
             <span aria-hidden>·</span>

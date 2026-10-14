@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { custom, encodeFunctionData, erc20Abi, http, parseEther, parseGwei, serializeTransaction } from 'viem';
+import { custom, encodeFunctionData, erc20Abi, http, parseEther, parseGwei, parseTransaction, recoverTransactionAddress, serializeTransaction } from 'viem';
 import { createNetworkRegistry, assetsForNetwork, type TransferIntent } from '@qd/blockchain';
 import { HDKeyring, HDSigner } from '@qd/wallet-core';
 import { EvmAdapter, NonceTracker, discoverAccounts, type EvmUnsignedTx } from '../src';
@@ -141,6 +141,78 @@ describe('EvmAdapter (unit)', () => {
     await expect(
       a.broadcastTransaction({ networkId: 'eth-mainnet', raw: '0x02', hash: `0x${'22'.repeat(32)}` }),
     ).rejects.toMatchObject({ code: 'BROADCAST_UNKNOWN' });
+  });
+});
+
+const sepolia = registry.require('sepolia') as never;
+const SEPOLIA_HEX = '0xaa36a7'; // 11155111
+
+describe('EvmAdapter on Ethereum Sepolia (unit)', () => {
+  it('reports connectivity, latest block and the verified chain id', async () => {
+    const { transport } = fakeNode({ eth_chainId: () => SEPOLIA_HEX, eth_blockNumber: () => '0x8a1b2c' });
+    const a = new EvmAdapter({ network: sepolia, transport });
+    await expect(a.getChainStatus()).resolves.toEqual({ chainId: 11155111, blockNumber: 0x8a1b2cn });
+  });
+
+  it('refuses an RPC that serves Mainnet under the Sepolia network', async () => {
+    const { transport } = fakeNode({ eth_chainId: () => '0x1', eth_blockNumber: () => '0x1' });
+    const a = new EvmAdapter({ network: sepolia, transport });
+    await expect(a.getChainStatus()).rejects.toMatchObject({ code: 'CHAIN_MISMATCH', fundsMoved: 'no' });
+  });
+
+  it('reports an unreachable RPC without exposing its URL', async () => {
+    const secret = 'alch_TESTSECRETKEY';
+    const a = new EvmAdapter({ network: sepolia, transport: http(`http://127.0.0.1:1/v2/${secret}`, { retryCount: 0, timeout: 2000 }) });
+    const err = await a.getChainStatus().catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'NETWORK_UNAVAILABLE', retryable: true });
+    const e = err as { message: string; userMessage: string; technical?: string };
+    for (const text of [e.message, e.userMessage, e.technical ?? '']) expect(text).not.toContain(secret);
+  });
+
+  it('reads the native balance in wei', async () => {
+    const { transport } = fakeNode({ eth_getBalance: () => '0x2386f26fc10000' }); // 0.01 ETH
+    const a = new EvmAdapter({ network: sepolia, transport });
+    expect(await a.getBalance(A0)).toBe(parseEther('0.01'));
+  });
+
+  it('builds, signs and assembles a Sepolia transfer with chain id 11155111', async () => {
+    const { transport } = fakeNode({ eth_chainId: () => SEPOLIA_HEX });
+    const a = new EvmAdapter({ network: sepolia, transport });
+    const intent: TransferIntent = { from: A0, to: A1, asset: assetsForNetwork(sepolia)[0]!, amount: parseEther('0.001') };
+    const q = await a.estimateFee(intent);
+    const u = await a.buildTransaction(intent, q.options.market);
+    expect(u.tx).toMatchObject({ chainId: 11155111, nonce: 5, gas: 21000n, value: parseEther('0.001') });
+
+    const signer = new HDSigner(await HDKeyring.fromMnemonic(ANVIL_MNEMONIC));
+    const payload = a.signingPayload(u);
+    const sig = await signer.sign({ account: { id: 'a0', hdIndex: 0 }, payload, confirmation: signer.confirmations.issue(payload) });
+    const signed = a.assembleSigned(u, sig);
+    const parsed = parseTransaction(signed.raw);
+    expect(parsed.chainId).toBe(11155111);
+    expect(await recoverTransactionAddress({ serializedTransaction: signed.raw as never })).toBe(A0);
+  });
+
+  it('refuses to sign when the payload chain differs from the declared network', async () => {
+    const a = new EvmAdapter({ network: sepolia, transport: fakeNode().transport });
+    const intent: TransferIntent = { from: A0, to: A1, asset: assetsForNetwork(sepolia)[0]!, amount: 1n };
+    const u = await a.buildTransaction(intent, { tier: 'market', maxFee: 0n, estimatedFee: 0n, etaSeconds: 0, params: { gas: 21000n, maxFeePerGas: 2n, maxPriorityFeePerGas: 1n } });
+    const signer = new HDSigner(await HDKeyring.fromMnemonic(ANVIL_MNEMONIC));
+    const payload = { ...a.signingPayload(u), chainId: 1 }; // claims Mainnet
+    await expect(
+      signer.sign({ account: { id: 'a0', hdIndex: 0 }, payload, confirmation: signer.confirmations.issue(payload) }),
+    ).rejects.toMatchObject({ code: 'INVALID_PAYLOAD' });
+  });
+
+  it('surfaces a rejected broadcast and does not record the nonce', async () => {
+    const tracker = new NonceTracker();
+    const { transport } = fakeNode({
+      eth_sendRawTransaction: () => {
+        throw new Error('insufficient funds for gas * price + value');
+      },
+    });
+    const a = new EvmAdapter({ network: sepolia, transport, nonceTracker: tracker });
+    await expect(a.broadcastTransaction({ networkId: 'sepolia', raw: '0x02', hash: `0x${'22'.repeat(32)}` })).rejects.toThrow(/insufficient funds/);
+    expect(tracker.lastUsed(11155111, A0)).toBeUndefined();
   });
 });
 
