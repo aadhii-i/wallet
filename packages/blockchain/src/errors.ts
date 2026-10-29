@@ -8,6 +8,7 @@ export type WalletErrorCode =
   | 'FEE_TOO_LOW'
   | 'REVERTED'
   | 'GAS_ESTIMATION_FAILED'
+  | 'FEE_QUOTE_FAILED'
   | 'BROADCAST_UNKNOWN'
   | 'NETWORK_UNAVAILABLE'
   | 'RATE_LIMITED'

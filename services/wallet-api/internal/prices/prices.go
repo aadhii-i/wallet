@@ -30,12 +30,13 @@ type StaticProvider struct {
 
 func NewStaticProvider() *StaticProvider {
 	return &StaticProvider{fixed: map[string]string{
-		"ethereum":      "3000.00",
-		"monero":        "160.00",
-		"usd-coin":      "1.00",
-		"tether":        "1.00",
-		"matic-network": "0.50",
-		"bitcoin":       "60000.00",
+		"ethereum":                "3000.00",
+		"monero":                  "160.00",
+		"usd-coin":                "1.00",
+		"tether":                  "1.00",
+		"dai":                     "1.00",
+		"polygon-ecosystem-token": "0.50",
+		"bitcoin":                 "60000.00",
 	}}
 }
 

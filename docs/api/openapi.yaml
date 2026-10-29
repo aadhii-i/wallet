@@ -547,7 +547,7 @@ components:
         family: { type: string, enum: [evm, monero] }
         chainId: { type: integer }
         name: { type: string }
-        kind: { type: string, enum: [mainnet, testnet, local] }
+        kind: { type: string, enum: [mainnet, testnet, local, unknown] }
         nativeSymbol: { type: string }
         nativeDecimals: { type: integer }
     Transaction:

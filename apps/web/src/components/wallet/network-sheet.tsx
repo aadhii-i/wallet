@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { Check } from 'lucide-react';
 import type { Network } from '@qd/blockchain';
 import { useQueryClient } from '@tanstack/react-query';
-import { registry } from '@/lib/chains';
+import { useSelectableNetworks, useUnmodelledNetworks } from '@/lib/hooks';
 import { toast, useMeta } from '@/lib/store';
 import { Sheet } from '../ui/sheet';
 import { t } from '../ui/motion';
@@ -39,11 +39,13 @@ export function NetworkSheet({ open, onOpenChange }: { open: boolean; onOpenChan
   const current = useMeta((s) => s.networkId);
   const select = useMeta((s) => s.selectNetwork);
   const qc = useQueryClient();
+  const selectable = useSelectableNetworks();
+  const unmodelled = useUnmodelledNetworks();
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange} title="Select a network">
       {GROUPS.map((g) => {
-        const items = registry.all().filter((n) => n.kind === g.kind);
+        const items = selectable.filter((n) => n.kind === g.kind);
         if (items.length === 0) return null;
         return (
           <section key={g.kind} className="mb-4">
@@ -84,6 +86,18 @@ export function NetworkSheet({ open, onOpenChange }: { open: boolean; onOpenChan
           </section>
         );
       })}
+      {selectable.length === 0 && (
+        <p className="px-1 text-sm text-muted">
+          No network is reachable right now. wallet-api only lists chains it has an upstream for, so check its
+          <code className="mx-1 rounded bg-surface-hover px-1 py-0.5 text-xs">EVM_RPC_&lt;chainId&gt;</code>
+          configuration, or set your own RPC under Settings.
+        </p>
+      )}
+      {unmodelled.length > 0 && (
+        <p className="px-1 text-xs text-subtle">
+          wallet-api proxies {unmodelled.length} chain{unmodelled.length === 1 ? '' : 's'} this build cannot display yet.
+        </p>
+      )}
     </Sheet>
   );
 }

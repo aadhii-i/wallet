@@ -4,7 +4,12 @@
  */
 
 export type ChainFamily = 'evm' | 'monero';
-export type NetworkKind = 'mainnet' | 'testnet' | 'local';
+/**
+ * `unknown` is only ever produced by the backend, for a chain id supplied by
+ * configuration that has no entry in its known-network table. The client
+ * registry never declares it.
+ */
+export type NetworkKind = 'mainnet' | 'testnet' | 'local' | 'unknown';
 export type SigningMode = 'hd' | 'mpc' | 'qd';
 export type Platform = 'web' | 'ios' | 'android';
 export type TxStatus = 'pending' | 'confirmed' | 'failed' | 'replaced' | 'dropped';

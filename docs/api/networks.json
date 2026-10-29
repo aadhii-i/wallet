@@ -1,0 +1,77 @@
+{
+  "$comment": "Canonical EVM network table shared by the TypeScript client registry (packages/blockchain/src/networks.ts) and the Go server registry (services/wallet-api/internal/blockchain/evm/network.go). Only the fields both registries model are listed here; client-only presentation fields (explorer, accent, feeModel, feeStrategy, blockTimeMs, confirmationsForFinal, feeWarningNative, faucetUrl, shortName) stay in the TypeScript registry. Both test suites assert against this file, so a chain added on one side alone fails CI. spec 11.3: 'The registry is data.'",
+  "networks": [
+    {
+      "id": "eth-mainnet",
+      "chainId": 1,
+      "name": "Ethereum",
+      "kind": "mainnet",
+      "nativeSymbol": "ETH",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "base",
+      "chainId": 8453,
+      "name": "Base",
+      "kind": "mainnet",
+      "nativeSymbol": "ETH",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "arbitrum",
+      "chainId": 42161,
+      "name": "Arbitrum One",
+      "kind": "mainnet",
+      "nativeSymbol": "ETH",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "polygon",
+      "chainId": 137,
+      "name": "Polygon PoS",
+      "kind": "mainnet",
+      "nativeSymbol": "POL",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "sepolia",
+      "chainId": 11155111,
+      "name": "Ethereum Sepolia",
+      "kind": "testnet",
+      "nativeSymbol": "SepoliaETH",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "base-sepolia",
+      "chainId": 84532,
+      "name": "Base Sepolia",
+      "kind": "testnet",
+      "nativeSymbol": "ETH",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "arbitrum-sepolia",
+      "chainId": 421614,
+      "name": "Arbitrum Sepolia",
+      "kind": "testnet",
+      "nativeSymbol": "ETH",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "amoy",
+      "chainId": 80002,
+      "name": "Polygon Amoy",
+      "kind": "testnet",
+      "nativeSymbol": "POL",
+      "nativeDecimals": 18
+    },
+    {
+      "id": "anvil",
+      "chainId": 31337,
+      "name": "Localhost (Anvil)",
+      "kind": "local",
+      "nativeSymbol": "ETH",
+      "nativeDecimals": 18
+    }
+  ]
+}

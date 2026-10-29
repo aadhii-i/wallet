@@ -5,6 +5,8 @@ A non-custodial, multi-chain wallet (Ethereum / EVM now, Monero and QD/MPC signi
 - **Specification:** [docs/architecture/qd-wallet-v1-technical-spec.md](docs/architecture/qd-wallet-v1-technical-spec.md)
 - **Decisions:** [docs/adr/](docs/adr/README.md)
 - **API contract:** [docs/api/openapi.yaml](docs/api/openapi.yaml)
+- **Chain registry contract:** [docs/api/networks.json](docs/api/networks.json) ([ADR 0015](docs/adr/0015-one-network-table-asserted-from-both-sides.md))
+- **Enable another chain:** [docs/operations/enable-an-evm-chain.md](docs/operations/enable-an-evm-chain.md)
 
 > Status: **V1 preview — testnet/local use only.** Not audited. Do not use with real funds.
 
@@ -15,6 +17,7 @@ A non-custodial, multi-chain wallet (Ethereum / EVM now, Monero and QD/MPC signi
 | M0 Spec, ADRs, API contract, schema | ✅ |
 | M1 Wallet core (BIP-39, BIP-32/44, encrypted vault, HD signer) | ✅ tested against official vectors and viem |
 | M2 Ethereum: balances, fees, send, receive, history, tracking | ✅ verified end-to-end on Anvil; 🚧 Ethereum Sepolia connected (see [below](#ethereum-sepolia-testnet)) |
+| M2+ Multi-chain EVM: Base, Arbitrum One, Polygon PoS and their testnets | ✅ Ethereum Sepolia, Base Sepolia, Arbitrum Sepolia and Polygon Amoy are selectable and read live blocks through the RPC proxy. 🚧 The four mainnets are declared but gated, and no fee strategy has quoted a live rollup yet ([runbook](docs/operations/enable-an-evm-chain.md)) |
 | M3 Web wallet (Next.js) | ✅ onboarding, backup, import, unlock, accounts, networks, send/receive, activity, security, settings |
 | M4 Mobile (Expo) | ⏳ not started |
 | M5 Monero | ⏳ blocked on ADR 0006/0007 spike |
@@ -76,14 +79,34 @@ In the app, choose **Ethereum Sepolia** in the network selector. Under the balan
 | Network config (chain id, explorer, faucet link) | ✅ unit-tested |
 | RPC key server-side only (`EVM_RPC_11155111` in `.env`) | ✅ not in source, build output or git history |
 | Connection check: latest block and chain-id verification before balances and before signing | ✅ unit-tested; RPC reachable and reports `0xaa36a7` |
-| wallet-api disables an upstream whose `eth_chainId` doesn't match its configured chain | 🚧 written with tests, not yet compiled or run (Go not installed on the dev machine) |
+| wallet-api disables an upstream whose `eth_chainId` doesn't match its configured chain | ✅ compiles and passes `go test ./...` (Go toolchain in `golang:1-bookworm`); a live mismatched upstream has not been exercised |
 | Real ETH balance, receive screen with copy and faucet guidance | ✅ implemented; build passes |
 | Send: gas-limit bug fixed (see below) | 🚧 fix verified by a live dry run (`eth_call`); a successful live send is still to be confirmed |
-| Sepolia transaction history from the backend | ⏳ off by default; set `HISTORY_PROVIDER_11155111=alchemy` to enable |
+| Sepolia transaction history from the backend | ✅ enabled in `.env` (`HISTORY_PROVIDER_11155111=alchemy`); `GET /v1/activity` answers 200 with the provider's transfers |
+| Activity list survives a provider item with no flags | ✅ server now always serialises `flags` as an array (openapi requires it), client defaults it; was a `Cannot read properties of null` crash |
+| One network table for client and server | ✅ `docs/api/networks.json`, asserted from both sides ([ADR 0015](docs/adr/0015-one-network-table-asserted-from-both-sides.md)) |
+| Network selector lists only chains the API can reach | ✅ gated by `GET /v1/networks`; Settings labels a chain the backend does not proxy, and a custom RPC still bypasses the gate |
+| Fee quoting knows the difference between chains | ✅ `feeStrategy` in the registry selects the model ([ADR 0016](docs/adr/0016-per-chain-fee-strategies.md)): Ethereum keeps fee-history tiers, Base adds the OP-stack L1 data fee, Arbitrum prices from `eth_gasPrice`, Polygon lifts its tip to the chain minimum. Unit-tested against a fake node — 🚧 the first quote against a live rollup is still to come |
 
 ### Fixed: native transfers to new accounts failed out of gas
 
 The first two Sepolia sends (`0x9343eeea…2d64e`, `0xd447a5b5…cadad4`) were mined with status `failed`, a gas limit of 21,000 and all of it used. The EVM adapter skipped `eth_estimateGas` for any recipient without contract code and hardcoded 21,000 gas. On Sepolia today, a transfer that creates a never-used account costs ~207,000 gas (a transfer to an existing account costs ~12,000), so 21,000 is not a safe constant. The adapter now always asks the node for an estimate, adds a 20% margin and floors the result at 21,000. A failed estimate stops the send instead of guessing. Regression tests are in `packages/evm/test/evm.test.ts`.
+
+## Rollup testnets
+
+Base Sepolia, Arbitrum Sepolia and Polygon Amoy are enabled the same way as Sepolia: one `EVM_RPC_<chainId>` line in `.env`, plus the chain declared in all three registries ([runbook](docs/operations/enable-an-evm-chain.md), [ADR 0015](docs/adr/0015-one-network-table-asserted-from-both-sides.md)).
+
+| Network | Chain id | RPC source | Activity history |
+|---|---|---|---|
+| Ethereum Sepolia | `11155111` | Alchemy | Alchemy |
+| Arbitrum Sepolia | `421614` | Alchemy, public RPC as a second upstream | Alchemy |
+| Base Sepolia | `84532` | public (`https://sepolia.base.org`) | none |
+| Polygon Amoy | `80002` | public (`https://polygon-amoy.drpc.org`) | none |
+| Localhost (Anvil) | `31337` | the local node | local scanner |
+
+The Alchemy app configured here answers `403` for Base Sepolia and Amoy, so those two run on public endpoints. Balances, fees and sends work; **Activity stays empty** because there is no history provider behind them. Enabling those networks on the Alchemy app and adding `HISTORY_PROVIDER_84532` / `HISTORY_PROVIDER_80002` is what changes that.
+
+Verified live: each chain passes wallet-api's `eth_chainId` check, is listed by `GET /v1/networks`, appears in the network selector and reports a block number — `apps/web/e2e/multi-network.spec.ts`. Not verified: a fee quote against a real rollup, which is the remaining gate in [ADR 0016](docs/adr/0016-per-chain-fee-strategies.md). The Receive screen shows no faucet link for these three because we have not verified a faucet URL rather than guess one; use the provider's own faucet.
 
 ## Tests
 
@@ -95,7 +118,23 @@ pnpm --filter @qd/web build && make e2e                 # Playwright (desktop + 
 E2E_API_URL=http://localhost:8080 make e2e              # include the full-stack suite
 ```
 
-Known issue: `pnpm -r test` stops at `apps/web`, whose vitest run picks up the Playwright `e2e/*.spec.ts` files and fails. Run the package tests with `pnpm -r --filter "./packages/*" test`. There is no lint script yet.
+**Which E2E config to use.** `playwright.config.ts` serves the static build on `:3100`, but wallet-api only answers CORS for `ALLOWED_ORIGINS` (`http://localhost:3000` by default), so on that port every backend call is blocked and the wallet shows "Can't reach …". Either add `:3100` to `ALLOWED_ORIGINS` when you want the static build, or run against the dev server:
+
+```bash
+make web                                                # terminal 1 — :3000
+pnpm --filter @qd/web exec playwright test --config=playwright.local.config.ts --project=desktop
+```
+
+`playwright.local.config.ts` is the same suite pointed at `:3000`; it covers the wallet flows and the Sepolia history screen, and only `serves strict security headers` fails there, because that one asserts the production CSP the dev server does not send. Run it from the `:3100` config to check the headers.
+
+Known issue: none for the unit-test run. `apps/web` now has a `vitest.config.ts` that limits the sweep to `src/**`, so `pnpm -r test` no longer picks up the Playwright specs in `e2e/` (which fail outside a Playwright runner). There is no lint script yet.
+
+Go tests need a Go 1.x toolchain. `make test-go` assumes it is installed; on a machine without one, run the same tests in a container:
+
+```bash
+MSYS_NO_PATHCONV=1 docker run --rm -v D:/wallet:/src -w /src/services/wallet-api \
+  golang:1-bookworm sh -c 'go vet ./... && go test ./...'
+```
 
 ## Security model in one paragraph
 

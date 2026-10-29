@@ -496,6 +496,9 @@ function ReviewAndSend(props: {
   useEffect(() => () => aborter.current?.abort(), []);
 
   const review = prepared?.review;
+  // `review.maxFee` is the gas cap decoded from the payload. Some chains also
+  // charge outside that cap, so every guard below uses the quoted worst case.
+  const worstCaseFee = prepared?.quote.options[tier].maxFee ?? review?.maxFee ?? 0n;
   const nativeAsset = adapter.listAssets()[0]!;
   const nativeBalance = useValuedHoldings(from).valued?.find((h) => h.asset.kind === 'native')?.balance ?? null;
   const findings: RiskFinding[] = useMemo(() => {
@@ -508,16 +511,16 @@ function ReviewAndSend(props: {
       knownAddresses: props.knownRecipients,
     }).filter((f) => f.code !== 'FIRST_TIME_RECIPIENT' && f.code !== 'OWN_ACCOUNT');
     const fee = assessFee({
-      maxFee: review.maxFee,
+      maxFee: worstCaseFee,
       feeWarningNative: parseUnits(network.feeWarningNative, network.nativeCurrency.decimals),
       amount: review.amount,
       isNativeTransfer: review.asset.kind === 'native',
     });
     return [...recipient, ...fee, ...assessNonce(prepared?.unsigned.warnings ?? [])];
-  }, [review, network, from, props.knownRecipients, prepared]);
+  }, [review, network, from, props.knownRecipients, prepared, worstCaseFee]);
 
   const insufficientForFee =
-    review && nativeBalance !== null && nativeBalance < review.maxFee + (review.asset.kind === 'native' ? review.amount : 0n);
+    review && nativeBalance !== null && nativeBalance < worstCaseFee + (review.asset.kind === 'native' ? review.amount : 0n);
   const needAck = findings.filter((f) => f.requiresAck && !acks[f.code]);
   const blocked = blockingFindings(findings).length > 0;
 
@@ -643,7 +646,7 @@ function ReviewAndSend(props: {
             <ReviewRow label="Network">
               <span className="inline-flex items-center gap-1.5">
                 <NetworkDot network={network} size={16} /> {network.name}
-                {network.kind !== 'mainnet' && <span className="rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">{network.kind === 'testnet' ? 'Testnet' : 'Local'}</span>}
+                {network.kind !== 'mainnet' && <span className="rounded bg-warning-soft px-1.5 text-[10px] font-semibold text-warning">{network.kind === 'testnet' ? 'Testnet' : network.kind === 'local' ? 'Local' : 'Unrecognised'}</span>}
               </span>
             </ReviewRow>
             <ReviewRow label="Network fee">
@@ -681,7 +684,12 @@ function ReviewAndSend(props: {
               <div>chainId: {prepared!.unsigned.tx.chainId}</div>
               <div>nonce: {prepared!.unsigned.tx.nonce}</div>
               <div>gas limit: {prepared!.unsigned.tx.gas.toString()}</div>
-              <div>max fee: {formatUnits(review.maxFee, 18)} {network.nativeCurrency.symbol}</div>
+              <div>max fee: {formatUnits(worstCaseFee, 18)} {network.nativeCurrency.symbol}</div>
+              {prepared!.quote.options[tier].params.extraFee !== undefined && (
+                <div>
+                  outside the gas cap: {formatUnits(prepared!.quote.options[tier].params.extraFee!, 18)} {network.nativeCurrency.symbol}
+                </div>
+              )}
               {prepared!.unsigned.warnings.length > 0 && <div className="text-warning">nonce warnings: {prepared!.unsigned.warnings.join(', ')}</div>}
             </div>
           )}

@@ -23,7 +23,6 @@ import {
   type EvmNetwork,
   type FeeOption,
   type FeeQuote,
-  type FeeTier,
   type Page,
   type ReviewSummary,
   type SignedTx,
@@ -32,12 +31,7 @@ import {
 } from '@qd/blockchain';
 import type { ActivityItem } from '@qd/shared-types';
 import type { SignatureResult, SigningPayload } from '@qd/wallet-core';
-
-export interface EvmFeeParams {
-  gas: bigint;
-  maxFeePerGas: bigint;
-  maxPriorityFeePerGas: bigint;
-}
+import { feeStrategyFor, type EvmFeeParams } from './fees';
 
 export interface EvmUnsignedTx {
   networkId: string;
@@ -65,7 +59,6 @@ export interface EvmAdapterOptions {
 /** Bounds from spec §16.3. Transfers never need more than this. */
 export const GAS_LIMIT_MIN = 21_000n;
 export const GAS_LIMIT_MAX = 5_000_000n;
-const MIN_PRIORITY_FEE = 1_000_000n; // 0.001 gwei
 
 /**
  * Remembers the last nonce this device used per (chain, address), so a lying or
@@ -210,33 +203,14 @@ export class EvmAdapter implements BlockchainAdapter<EvmUnsignedTx, EvmFeeParams
     return this.history.list(address, this.network.id, cursor);
   }
 
+  /**
+   * Gas first, then price: the OP-stack leg prices the L1 data fee off a
+   * transaction of this exact size, so the limit has to exist before the quote.
+   */
   async estimateFee(intent: TransferIntent): Promise<FeeQuote<EvmFeeParams>> {
     const call = this.callFor(intent);
-    const [gas, history] = await Promise.all([this.estimateGas(intent, call), this.client.getFeeHistory({ blockCount: 10, rewardPercentiles: [10, 50, 90], blockTag: 'latest' })]);
-
-    const nextBase = history.baseFeePerGas[history.baseFeePerGas.length - 1] ?? 0n;
-    const rewards = history.reward ?? [];
-    const priority = (col: number) => {
-      const vals = rewards.map((r) => r[col] ?? 0n).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-      const median = vals.length ? vals[Math.floor(vals.length / 2)]! : 0n;
-      return median < MIN_PRIORITY_FEE ? MIN_PRIORITY_FEE : median;
-    };
-    const blockSec = Math.max(1, Math.round(this.network.blockTimeMs / 1000));
-    const make = (tier: FeeTier, col: number, baseMultiplier: bigint, blocks: number) => {
-      const maxPriorityFeePerGas = priority(col);
-      const maxFeePerGas = nextBase * baseMultiplier + maxPriorityFeePerGas;
-      return {
-        tier,
-        maxFee: gas * maxFeePerGas,
-        estimatedFee: gas * (nextBase + maxPriorityFeePerGas),
-        etaSeconds: blocks * blockSec,
-        params: { gas, maxFeePerGas, maxPriorityFeePerGas },
-      };
-    };
-    return {
-      options: { low: make('low', 0, 2n, 6), market: make('market', 1, 2n, 2), aggressive: make('aggressive', 2, 3n, 1) },
-      quotedAt: this.now(),
-    };
+    const gas = await this.estimateGas(intent, call);
+    return feeStrategyFor(this.network).quote({ client: this.client, network: this.network, gas, call, now: this.now });
   }
 
   async buildTransaction(intent: TransferIntent, fee: FeeOption & { params: EvmFeeParams }): Promise<EvmUnsignedTx> {

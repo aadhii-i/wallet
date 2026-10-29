@@ -20,7 +20,13 @@ async function openFromNav(page: Page, name: 'Settings' | 'Home') {
 
 async function useAnvilRpc(page: Page) {
   await openFromNav(page, 'Settings');
-  await page.getByRole('button', { name: /Localhost \(Anvil\)/ }).click();
+  const row = page.getByRole('button', { name: /Localhost \(Anvil\)/ });
+  // The row is server-rendered, so the click can land before React has hydrated and
+  // go nowhere. Retry until the sheet actually opens instead of timing out blind.
+  await expect(async () => {
+    await row.click();
+    await page.getByLabel('RPC URL').waitFor({ state: 'visible', timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   await page.getByLabel('RPC URL').fill(ANVIL);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText('Custom RPC saved')).toBeVisible();
@@ -179,7 +185,8 @@ test.describe('full stack through wallet-api', () => {
     await page.getByRole('button', { name: 'Done' }).click();
     await page.getByRole('button', { name: 'Wallet menu' }).click();
     await page.getByRole('menuitem', { name: 'Security & privacy' }).click();
-    await expect(page.getByText('This device')).toBeVisible({ timeout: 15_000 });
+    // Exact: the page also carries the subtitle "Unlocks QD Wallet on this device."
+    await expect(page.getByText('This device', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('New device registered')).toBeVisible();
   });
 });

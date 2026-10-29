@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useQueryClient } from '@tanstack/react-query';
 import { ChevronRight, Globe, Server, Timer, Trash2 } from 'lucide-react';
 import { registry } from '@/lib/chains';
+import { useServerNetworks } from '@/lib/hooks';
 import { forgetDevice } from '@/lib/api';
 import { toast, useMeta, useSession } from '@/lib/store';
 import { reportEvent } from '@/lib/sync';
@@ -18,6 +19,10 @@ export default function SettingsPage() {
   const autoLock = useMeta((s) => s.autoLockMinutes);
   const setAutoLock = useMeta((s) => s.setAutoLockMinutes);
   const customRpc = useMeta((s) => s.customRpc);
+  const server = useServerNetworks().data;
+  // Until the server answers, assume every registry entry is proxied rather than
+  // warning about all of them.
+  const proxied = new Set(server ? server.networks.map((n) => n.id) : registry.all().map((n) => n.id));
   const [rpcSheet, setRpcSheet] = useState<string | null>(null);
   const [wipe, setWipe] = useState(false);
 
@@ -60,7 +65,13 @@ export default function SettingsPage() {
             <NetworkDot network={n} size={24} />
             <span className="flex-1">
               <span className="block font-medium">{n.name}</span>
-              <span className="block truncate text-xs text-subtle">{customRpc[n.id] ? `Custom RPC · ${new URL(customRpc[n.id]!).host}` : 'QD Wallet RPC'}</span>
+              <span className="block truncate text-xs text-subtle">
+                {customRpc[n.id]
+                  ? `Custom RPC · ${new URL(customRpc[n.id]!).host}`
+                  : proxied.has(n.id)
+                    ? 'QD Wallet RPC'
+                    : 'Not proxied by wallet-api · needs your own RPC'}
+              </span>
             </span>
             <ChevronRight size={18} className="text-subtle" />
           </button>

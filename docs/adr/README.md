@@ -15,5 +15,7 @@
 | [0011](0011-prices-fetched-by-the-backend-for-the-whole-token-list.md) | Prices fetched by the backend for the whole token list | Accepted |
 | [0012](0012-append-only-hash-chained-audit-log.md) | Append-only hash-chained audit log | Accepted |
 | [0014](0014-qd-wallet-protocol-threshold-raccoon-with-stateless-derivation.md) | QD-Wallet protocol: Threshold Raccoon with stateless derivation | Accepted (research/testnet) |
+| [0015](0015-one-network-table-asserted-from-both-sides.md) | One network table, asserted from both sides | Accepted |
+| [0016](0016-per-chain-fee-strategies.md) | One fee engine, per-chain fee strategies | Accepted |
 
 ADR 0013 (threshold ECDSA for EVM EOAs) is still open. D1 showed that QD is a lattice scheme, not threshold ECDSA, so 0013 is only needed if ECDSA MPC accounts are still wanted.

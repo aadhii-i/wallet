@@ -2,58 +2,101 @@ package rpc_test
 
 import (
 	"encoding/json"
-	"testing"
-
-	"github.com/go-chi/chi/v5"
-	"github.com/qdwallet/wallet-api/internal/blockchain/evm"
-	"github.com/qdwallet/wallet-api/internal/rpc"
 	"net/http"
 	"net/http/httptest"
+	"testing"
+
+	"github.com/qdwallet/wallet-api/internal/rpc"
 )
 
-// TestGetLogsForwardsNormalizedFilterNotRawParams guards against a
-// duplicate/case-variant-key desync: if the client's raw JSON contains both
-// "fromBlock" and a differently-cased "FromBlock" with a much wider range,
-// our validation (which follows Go's exact-key-match-first decoding) must
-// still only ever let the upstream see the single, validated interpretation
-// -- never the attacker-controlled duplicate key.
-func TestGetLogsForwardsNormalizedFilterNotRawParams(t *testing.T) {
-	var seenParams string
-	up := newFakeUpstream(t, func(method string, params json.RawMessage) (any, *fakeErr) {
-		seenParams = string(params)
-		return []any{}, nil
+// The proxy rebuilds an eth_getLogs filter from its own struct instead of
+// forwarding the client's bytes, so a caller must not be able to make the
+// upstream see a wider block range than the one wallet-api validated.
+//
+// encoding/json matches struct fields case-insensitively and assigns in document
+// order, so a duplicate "ToBlock" sitting beside "toBlock" silently won the value
+// that got validated. These tests pin the explicit rejection that replaced that
+// accident, and the normalisation that was always intended.
+
+func newLogsUpstream(t *testing.T, seenLogs *string) *fakeUpstream {
+	t.Helper()
+	return newFakeUpstream(t, func(method string, params json.RawMessage) (any, *fakeErr) {
+		if method == "eth_getLogs" {
+			*seenLogs = string(params)
+			return []any{}, nil
+		}
+		// Provider health probes (eth_blockNumber) must not be mistaken for a
+		// forwarded filter.
+		return "0x1", nil
 	})
-	registry := evm.NewRegistry(map[int64]int{31337: 1})
-	pool := rpc.NewPool(31337, []rpc.Upstream{{Name: "only", URL: up.srv.URL}}, nil)
-	mgr := rpc.NewManager(registry, map[int64]*rpc.Pool{31337: pool})
-	handler := rpc.NewHandler(mgr)
+}
 
-	router := chi.NewRouter()
-	router.Post("/v1/rpc/evm/{chainId}", handler.ServeHTTP)
-	srv := httptest.NewServer(router)
-	defer srv.Close()
+func startProxy(t *testing.T, up *fakeUpstream) *httptest.Server {
+	t.Helper()
+	h, _ := newTestHandler(t, 31337, rpc.Upstream{Name: "only", URL: up.srv.URL})
+	srv := httptest.NewServer(newRouter(h))
+	t.Cleanup(srv.Close)
+	return srv
+}
 
-	// A validated small range (0x0-0x64) alongside a duplicate, differently
-	// cased key carrying a huge range that must never reach the upstream.
+func TestGetLogsRejectsCaseVariantDuplicateRangeKeys(t *testing.T) {
+	var seenLogs string
+	srv := startProxy(t, newLogsUpstream(t, &seenLogs))
+
+	// A legitimate small range (0x0-0x64) plus case-variant duplicates carrying a
+	// huge range. The wide values must never be validated, adopted, or forwarded.
 	body := `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0x64","FromBlock":"0x0","ToBlock":"0xFFFFFF","address":"0xabc"}]}`
-	resp, err := http.Post(srv.URL+"/v1/rpc/evm/31337", "application/json", jsonBodyReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer resp.Body.Close()
+	resp, respBody := postRPC(t, srv, 31337, body)
 
-	if seenParams == "" {
-		t.Fatal("expected the upstream to be called")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy returned HTTP %d: %s", resp.StatusCode, respBody)
 	}
-	if !containsAll(seenParams, `"fromBlock":"0x0"`, `"toBlock":"0x64"`) {
-		t.Fatalf("expected the upstream to see the validated range, got: %s", seenParams)
+	if seenLogs != "" {
+		t.Fatalf("upstream must not be reached with an ambiguous filter, saw: %s", seenLogs)
 	}
-	if containsAny(seenParams, "FromBlock", "ToBlock", "0xffffff", "0xFFFFFF") {
-		t.Fatalf("expected the duplicate/case-variant wide-range keys to be dropped, got: %s", seenParams)
+	if !containsAll(string(respBody), `"code":-32602`, "duplicate keys") {
+		t.Fatalf("expected a -32602 duplicate-keys rejection, got: %s", respBody)
 	}
-	// The opaque address field must still be forwarded.
-	if !containsAll(seenParams, `"address":"0xabc"`) {
-		t.Fatalf("expected the address field to survive normalization, got: %s", seenParams)
+}
+
+func TestGetLogsForwardsCanonicalRangeAndDropsUnknownKeys(t *testing.T) {
+	var seenLogs string
+	srv := startProxy(t, newLogsUpstream(t, &seenLogs))
+
+	// 0x00 canonicalises to 0x0, and blockHash is not a key wallet-api
+	// understands, so it must not survive the rebuild.
+	body := `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x00","toBlock":"0x64","address":"0xabc","blockHash":"0xdeadbeef"}]}`
+	resp, respBody := postRPC(t, srv, 31337, body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy returned HTTP %d: %s", resp.StatusCode, respBody)
+	}
+	if seenLogs == "" {
+		t.Fatalf("expected the upstream to be called, proxy replied: %s", respBody)
+	}
+	if !containsAll(seenLogs, `"fromBlock":"0x0"`, `"toBlock":"0x64"`, `"address":"0xabc"`) {
+		t.Fatalf("expected the canonicalised range and the opaque address, got: %s", seenLogs)
+	}
+	if containsAny(seenLogs, "blockHash", "0xdeadbeef") {
+		t.Fatalf("expected unrecognised keys to be dropped, got: %s", seenLogs)
+	}
+}
+
+func TestGetLogsRejectsRangeAboveCap(t *testing.T) {
+	var seenLogs string
+	srv := startProxy(t, newLogsUpstream(t, &seenLogs))
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"eth_getLogs","params":[{"fromBlock":"0x0","toBlock":"0xBB8"}]}`
+	resp, respBody := postRPC(t, srv, 31337, body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy returned HTTP %d: %s", resp.StatusCode, respBody)
+	}
+	if seenLogs != "" {
+		t.Fatalf("over-cap range must not reach the upstream, saw: %s", seenLogs)
+	}
+	if !contains(string(respBody), "2000 blocks") {
+		t.Fatalf("expected the range cap message, got: %s", respBody)
 	}
 }
 
@@ -84,20 +127,4 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
-}
-
-func jsonBodyReader(s string) *stringReadCloser { return &stringReadCloser{s: s} }
-
-type stringReadCloser struct {
-	s   string
-	pos int
-}
-
-func (r *stringReadCloser) Read(p []byte) (int, error) {
-	if r.pos >= len(r.s) {
-		return 0, ioEOF
-	}
-	n := copy(p, r.s[r.pos:])
-	r.pos += n
-	return n, nil
 }

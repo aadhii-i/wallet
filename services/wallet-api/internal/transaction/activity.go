@@ -134,7 +134,7 @@ func (h *ActivityHandlers) GetActivity(w http.ResponseWriter, r *http.Request) {
 			"status":      item.Status,
 			"blockNumber": item.BlockNumber,
 			"timestamp":   item.Timestamp.UTC().Format(time.RFC3339),
-			"flags":       item.Flags,
+			"flags":       flagsForResponse(item.Flags),
 		})
 	}
 	resp := map[string]any{"items": out}
@@ -190,6 +190,16 @@ func providerToMerged(items []evm.ActivityItem) []mergedItem {
 		})
 	}
 	return out
+}
+
+// flagsForResponse keeps the openapi.yaml ActivityItem contract, which declares
+// flags as a required array. A nil Go slice marshals to JSON null, and the web
+// client dereferences it unguarded.
+func flagsForResponse(flags []string) []string {
+	if flags == nil {
+		return []string{}
+	}
+	return flags
 }
 
 func sentToSet(items []mergedItem) map[string]struct{} {

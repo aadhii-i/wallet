@@ -1,16 +1,57 @@
 'use client';
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { toUsdCents, type Asset } from '@qd/blockchain';
+import { toUsdCents, type Asset, type Network } from '@qd/blockchain';
 import type { ActivityItem } from '@qd/shared-types';
 import { getAdapter, registry } from './chains';
 import { getApi } from './api';
+import { filterEnabledNetworks, unmodelledNetworkIds } from './network-filter';
 import { useMeta, useSession, type AccountMeta } from './store';
+
+/** Networks wallet-api will proxy. Public endpoint, so it answers before unlock too. */
+export function useServerNetworks() {
+  return useQuery({
+    queryKey: ['networks'],
+    staleTime: 5 * 60_000,
+    retry: 1,
+    queryFn: async () => (await getApi()).networks(),
+  });
+}
+
+/**
+ * Networks this device can use: what the server proxies, plus anything the user
+ * gave a custom RPC. Order and metadata still come from the client registry.
+ */
+export function useSelectableNetworks(): Network[] {
+  const server = useServerNetworks().data;
+  const customRpc = useMeta((s) => s.customRpc);
+  return useMemo(
+    () =>
+      filterEnabledNetworks(
+        registry.all(),
+        server ? server.networks.map((n) => n.id) : null,
+        Object.keys(customRpc),
+      ),
+    [server, customRpc],
+  );
+}
+
+/** Chains the backend proxies that this build cannot render yet. */
+export function useUnmodelledNetworks(): string[] {
+  const server = useServerNetworks().data;
+  return useMemo(
+    () => unmodelledNetworkIds(server ? server.networks.map((n) => n.id) : null, registry.all().map((n) => n.id)),
+    [server],
+  );
+}
 
 export function useNetwork() {
   const networkId = useMeta((s) => s.networkId);
-  const network = registry.byId(networkId) ?? registry.all()[0]!;
-  return network;
+  const selectable = useSelectableNetworks();
+  // A backend with no upstream configured lists nothing. Falling back to the local
+  // registry keeps the UI able to explain itself instead of dereferencing undefined.
+  const list = selectable.length > 0 ? selectable : registry.all();
+  return list.find((n) => n.id === networkId) ?? list[0]!;
 }
 
 export function useAdapter() {
@@ -119,7 +160,8 @@ export function useActivity(account: AccountMeta | undefined) {
     const byHash = new Map<string, ActivityItem>();
     for (const i of local) byHash.set(i.hash.toLowerCase(), i);
     // Remote wins for status once indexed, but keep local-only pending items.
-    for (const i of remote.data ?? []) byHash.set(i.hash.toLowerCase(), i);
+    // flags is defaulted here because the list dereferences it unconditionally.
+    for (const i of remote.data ?? []) byHash.set(i.hash.toLowerCase(), { ...i, flags: i.flags ?? [] });
     return [...byHash.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   }, [account, localTxs, network.id, remote.data]);
 

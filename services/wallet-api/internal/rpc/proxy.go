@@ -5,8 +5,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -186,6 +188,9 @@ type normalizedLogsFilter struct {
 // explicit hex fromBlock/toBlock (no "latest"/"pending"/"earliest" tags) and
 // a range of at most MaxLogsRange blocks.
 func validateAndNormalizeLogsFilter(params json.RawMessage) (json.RawMessage, error) {
+	if err := rejectCaseVariantDuplicateKeys(params); err != nil {
+		return nil, err
+	}
 	var arr []logsFilter
 	if err := json.Unmarshal(params, &arr); err != nil || len(arr) != 1 {
 		return nil, errors.New("eth_getLogs requires a single filter object with explicit fromBlock/toBlock")
@@ -213,6 +218,38 @@ func validateAndNormalizeLogsFilter(params json.RawMessage) (json.RawMessage, er
 		return nil, err
 	}
 	return out, nil
+}
+
+// rejectCaseVariantDuplicateKeys refuses an eth_getLogs filter that carries two
+// keys differing only by case (for example "toBlock" beside "ToBlock").
+//
+// encoding/json matches struct fields to keys case-insensitively and assigns in
+// the order the keys appear in the document, so the later variant silently
+// overwrites the earlier one. Rebuilding the filter drops the surplus key but
+// not the value it won, which means the range we validate and forward would be
+// the one the duplicate supplied. Decoding into a map preserves both spellings,
+// so the ambiguity can be refused instead of resolved by accident.
+func rejectCaseVariantDuplicateKeys(params json.RawMessage) error {
+	var arr []map[string]json.RawMessage
+	if err := json.Unmarshal(params, &arr); err != nil {
+		return nil // the struct decode below reports the real error
+	}
+	for _, filter := range arr {
+		keys := make([]string, 0, len(filter))
+		for key := range filter {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		seen := make(map[string]string, len(keys))
+		for _, key := range keys {
+			lower := strings.ToLower(key)
+			if first, ok := seen[lower]; ok {
+				return fmt.Errorf("eth_getLogs filter has duplicate keys %q and %q", first, key)
+			}
+			seen[lower] = key
+		}
+	}
+	return nil
 }
 
 // forwardRead tries providers in priority order (failover), skipping
