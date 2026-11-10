@@ -2,16 +2,22 @@
 import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
-import { checkPasswordStrength, isBip39Word, suggestWords, validateMnemonic } from '@qd/wallet-core';
-import { discoverAccounts } from '@qd/evm';
+import { VALID_WORD_COUNTS, checkPasswordStrength, isBip39Word, makeAccountMeta, suggestWords, validateMnemonic } from '@qd/wallet-core';
+import { discoverRestoredAccounts } from '@/lib/accounts';
 import { useVaultGate } from '@/lib/gate';
-import { getAdapter } from '@/lib/chains';
 import { useMeta, useSession, toast } from '@/lib/store';
 import { reportEvent } from '@/lib/sync';
-import { vault } from '@/lib/vault-client';
+import { vault, VaultClientError } from '@/lib/vault-client';
 import { Button } from '@/components/ui/button';
 import { OnboardingFrame, PasswordInput, StrengthMeter } from '@/features/onboarding/shared';
 import { stepVariants, t } from '@/components/ui/motion';
+
+type WordCount = (typeof VALID_WORD_COUNTS)[number];
+
+/** Grid size for a pasted phrase: its own length if valid, else the next valid length. */
+function countFor(n: number): WordCount {
+  return VALID_WORD_COUNTS.find((c) => c >= n) ?? 24;
+}
 
 /**
  * Import flow (spec §3.2). The phrase is validated locally, handed to the
@@ -20,7 +26,7 @@ import { stepVariants, t } from '@/components/ui/motion';
 export default function ImportWallet() {
   const { ready } = useVaultGate('no-vault-or-unlocked');
   const router = useRouter();
-  const [count, setCount] = useState<12 | 24>(12);
+  const [count, setCount] = useState<WordCount>(12);
   const [words, setWords] = useState<string[]>(Array(12).fill(''));
   const [focus, setFocus] = useState<number | null>(null);
   const [step, setStep] = useState<1 | 2>(1);
@@ -38,8 +44,8 @@ export default function ImportWallet() {
     const parts = v.trim().split(/\s+/);
     if (parts.length > 1) {
       // Pasting the whole phrase into any cell distributes it.
-      const n = parts.length > 12 ? 24 : 12;
-      setCount(n as 12 | 24);
+      const n = countFor(parts.length);
+      setCount(n);
       setWords(Array.from({ length: n }, (_, k) => (parts[k] ?? '').toLowerCase()));
       return;
     }
@@ -48,30 +54,35 @@ export default function ImportWallet() {
 
   const doImport = async () => {
     setBusy('Encrypting your wallet…');
+    let address: string;
     try {
-      const { address } = await vault.call('import', { mnemonic: phrase, password: pw });
-      setWords(Array(count).fill(''));
-      useMeta.getState().reset();
-      useMeta.getState().setAccounts([{ index: 0, name: 'Account 1', address }]);
-      setBusy('Looking for your accounts…');
-      try {
-        const adapter = getAdapter(useMeta.getState().networkId, useMeta.getState().customRpc[useMeta.getState().networkId]);
-        const addresses = await vault.call('addresses', { indexes: Array.from({ length: 20 }, (_, i) => i) });
-        const used = await Promise.race([
-          discoverAccounts([adapter], (i) => addresses[i]!, { max: 20 }),
-          new Promise<number[]>((resolve) => setTimeout(() => resolve([0]), 8000)),
-        ]);
-        useMeta.getState().setAccounts(used.map((i) => ({ index: i, name: `Account ${i + 1}`, address: addresses[i]! })));
-      } catch {
-        /* discovery is best-effort */
-      }
-      useSession.getState().set({ status: 'unlocked', backedUp: true });
-      void reportEvent('wallet_imported');
-      router.replace('/onboarding/done');
-    } catch {
-      toast.error('Couldn’t import wallet', 'Check your recovery phrase and try again.');
+      // The KeyWorker re-validates the phrase and encrypts exactly this phrase; it never generates one here.
+      ({ address } = await vault.call('import', { mnemonic: phrase, password: pw }));
+    } catch (e) {
+      const code = e instanceof VaultClientError ? e.code : 'INTERNAL';
+      if (code === 'VAULT_EXISTS') toast.error('A wallet already exists on this device', 'Remove it in Settings before restoring another one.');
+      else if (code === 'INVALID_PHRASE') toast.error('Invalid recovery phrase', 'Check the words and their order.');
+      else toast.error('Couldn’t restore wallet', 'Nothing was saved. Please try again.');
       setBusy(null);
+      return;
     }
+    setWords(Array(count).fill(''));
+    setPw('');
+    setPw2('');
+    useMeta.getState().reset();
+    useMeta.getState().setAccounts([makeAccountMeta(0, address)]);
+    setBusy('Looking for your accounts…');
+    try {
+      const { accounts, complete } = await discoverRestoredAccounts();
+      useMeta.getState().setAccounts(accounts);
+      if (accounts.length > 1) toast.success(`Restored ${accounts.length} accounts`);
+      if (!complete) toast.info('Couldn’t check for other accounts', 'Account 1 is restored. Use Add account to restore more from the same phrase.');
+    } catch {
+      toast.info('Couldn’t check for other accounts', 'Account 1 is restored. Use Add account to restore more from the same phrase.');
+    }
+    useSession.getState().set({ status: 'unlocked', backedUp: true });
+    void reportEvent('wallet_imported');
+    router.replace('/onboarding/done');
   };
 
   const errorText =
@@ -90,8 +101,11 @@ export default function ImportWallet() {
           <motion.div key="1" custom={1} variants={stepVariants} initial="enter" animate="center" exit="exit" transition={t.base} className="flex flex-1 flex-col">
             <h1 className="text-2xl font-bold">Import with recovery phrase</h1>
             <p className="mb-4 mt-1 text-muted">Enter your phrase. It is checked on this device and never sent anywhere.</p>
-            <div className="mb-4 inline-flex self-start rounded-full bg-sunken p-1 text-sm" role="radiogroup" aria-label="Phrase length">
-              {([12, 24] as const).map((n) => (
+            <div className="mb-4 inline-flex items-center self-start rounded-full bg-sunken p-1 text-sm" role="radiogroup" aria-label="Number of words">
+              <span className="px-2 text-muted" aria-hidden>
+                Words
+              </span>
+              {VALID_WORD_COUNTS.map((n) => (
                 <button
                   key={n}
                   type="button"
@@ -101,10 +115,11 @@ export default function ImportWallet() {
                     setCount(n);
                     setWords((ws) => Array.from({ length: n }, (_, i) => ws[i] ?? ''));
                   }}
-                  className={`relative rounded-full px-4 py-1.5 font-medium ${count === n ? 'text-ink' : 'text-muted'}`}
+                  aria-label={`${n} words`}
+                  className={`relative rounded-full px-3 py-1.5 font-medium ${count === n ? 'text-ink' : 'text-muted'}`}
                 >
                   {count === n && <motion.span layoutId="len" className="absolute inset-0 rounded-full bg-elevated shadow" transition={t.snappy} />}
-                  <span className="relative">{n} words</span>
+                  <span className="relative tabular">{n}</span>
                 </button>
               ))}
             </div>

@@ -40,7 +40,7 @@ export const MAX_KDF = { m: 262144, t: 10, p: 4 } as const;
 
 export class VaultError extends Error {
   constructor(
-    readonly code: 'WRONG_PASSWORD' | 'CORRUPT' | 'WEAK_PARAMS' | 'UNSUPPORTED',
+    readonly code: 'WRONG_PASSWORD' | 'CORRUPT' | 'WEAK_PARAMS' | 'WEAK_PASSWORD' | 'UNSUPPORTED',
     message: string,
   ) {
     super(message);
@@ -73,6 +73,7 @@ export async function encryptVault(
   password: string,
   opts: KdfOptions = {},
 ): Promise<EncryptedVault> {
+  assertStrongPassword(password);
   const params = opts.kdf ?? DEFAULT_KDF;
   if (!opts.allowWeakKdfForTests) assertStrongParams(params);
   const kdf: KdfParams = { alg: 'argon2id', ...params, salt: toBase64Url(randomBytes(16)) };
@@ -168,4 +169,11 @@ export function checkPasswordStrength(pw: string): PasswordStrength {
   const score = Math.min(4, Math.max(1, classes - 1 + lengthBonus)) as 1 | 2 | 3 | 4;
   if (score < 2) return { score, ok: false, hint: 'Add numbers, symbols or more length' };
   return { score, ok: true };
+}
+
+export function assertStrongPassword(password: string): void {
+  const strength = checkPasswordStrength(password);
+  if (!strength.ok) {
+    throw new VaultError('WEAK_PASSWORD', strength.hint ?? 'Password does not meet the minimum strength requirements');
+  }
 }

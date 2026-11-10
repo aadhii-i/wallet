@@ -6,8 +6,8 @@ import { formatDisplay } from '@qd/blockchain';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAdapter } from '@/lib/hooks';
 import { toast, useMeta, type AccountMeta } from '@/lib/store';
+import { addNextAccount } from '@/lib/accounts';
 import { syncWithBackend } from '@/lib/sync';
-import { vault } from '@/lib/vault-client';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '../ui/button';
 import { Identicon, shortAddress } from '../ui/identity';
@@ -18,17 +18,14 @@ export function AccountSheet({ open, onOpenChange }: { open: boolean; onOpenChan
   const accounts = useMeta((s) => s.accounts);
   const selected = useMeta((s) => s.selectedIndex);
   const select = useMeta((s) => s.selectAccount);
-  const addAccount = useMeta((s) => s.addAccount);
   const [adding, setAdding] = useState(false);
   const qc = useQueryClient();
 
   const onAdd = async () => {
     setAdding(true);
     try {
-      const next = Math.max(-1, ...accounts.map((a) => a.index)) + 1;
-      const [address] = await vault.call('addresses', { indexes: [next] });
-      addAccount({ index: next, name: `Account ${next + 1}`, address: address! });
-      toast.success(`Account ${next + 1} created`);
+      const account = await addNextAccount();
+      toast.success(`${account.name} created`, `Derived from your recovery phrase (${account.path}).`);
       void syncWithBackend();
       void qc.invalidateQueries({ queryKey: ['holdings'] });
     } catch {

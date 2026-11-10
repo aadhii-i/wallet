@@ -2,19 +2,13 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { TxStatus } from '@qd/shared-types';
+import type { HDAccountMeta } from '@qd/wallet-core';
 
 /**
  * Non-secret wallet metadata (names, public addresses, preferences). Persisted in
  * localStorage for convenience — it never contains keys, phrases or passwords.
  */
-export interface AccountMeta {
-  index: number;
-  name: string;
-  address: string;
-  hidden?: boolean;
-  /** wallet-api account id once synced. */
-  apiId?: string;
-}
+export type AccountMeta = HDAccountMeta;
 
 export interface LocalTx {
   hash: string;
@@ -59,7 +53,8 @@ interface MetaState {
   reset(): void;
 }
 
-const DEFAULT_NETWORK = process.env.NEXT_PUBLIC_ENABLE_LOCAL_NETWORKS === 'true' ? 'anvil' : 'sepolia';
+// Never default to a local chain: Anvil is opt-in from the network sheet.
+const DEFAULT_NETWORK = 'sepolia';
 
 const initial = {
   accounts: [] as AccountMeta[],
@@ -106,7 +101,9 @@ export const useMeta = create<MetaState>()(
           return { localTxs: [tx, ...rest].slice(0, 300) };
         }),
       toggleHideBalances: () => set((s) => ({ hideBalances: !s.hideBalances })),
-      reset: () => set({ ...initial }),
+      // Network choice and custom RPCs are device preferences, not wallet data:
+      // creating or restoring a wallet must not silently move the user to another chain.
+      reset: () => set((s) => ({ ...initial, networkId: s.networkId, customRpc: s.customRpc })),
     }),
     {
       name: 'qd-meta',

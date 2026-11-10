@@ -194,7 +194,7 @@ describe('vault', () => {
   it('refuses weak KDF parameters outside tests', async () => {
     const vault = await encryptVault(contents, 'pw-12345678', FAST_KDF);
     await expect(decryptVault(vault, 'pw-12345678')).rejects.toMatchObject({ code: 'WEAK_PARAMS' });
-    await expect(encryptVault(contents, 'pw', { kdf: { m: 1024, t: 1, p: 1 } })).rejects.toMatchObject({
+    await expect(encryptVault(contents, 'Lower-and-9', { kdf: { m: 1024, t: 1, p: 1 } })).rejects.toMatchObject({
       code: 'WEAK_PARAMS',
     });
   });
@@ -213,6 +213,15 @@ describe('vault', () => {
     expect(checkPasswordStrength('short').ok).toBe(false);
     expect(checkPasswordStrength('alllowercase').ok).toBe(false);
     expect(checkPasswordStrength('Lower-and-9').ok).toBe(true);
+  });
+
+  it('rejects weak passwords at the vault boundary', async () => {
+    await expect(encryptVault(contents, 'short')).rejects.toMatchObject({ code: 'WEAK_PASSWORD' });
+    await expect(encryptVault(contents, 'alllowercase')).rejects.toMatchObject({ code: 'WEAK_PASSWORD' });
+    expect(() => {
+      const { ok } = checkPasswordStrength('short');
+      if (!ok) throw new Error('weak password');
+    }).toThrow('weak password');
   });
 });
 

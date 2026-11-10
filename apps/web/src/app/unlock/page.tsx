@@ -3,7 +3,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'motion/react';
 import { useVaultGate, refreshVaultStatus } from '@/lib/gate';
-import { useMeta, useSession } from '@/lib/store';
+import { toast, useMeta, useSession } from '@/lib/store';
 import { reportEvent } from '@/lib/sync';
 import { vault, VaultClientError } from '@/lib/vault-client';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,7 @@ import { Logo } from '@/components/wallet/logo';
 import { PasswordInput } from '@/features/onboarding/shared';
 import { t } from '@/components/ui/motion';
 import { forgetDevice } from '@/lib/api';
+import { reconcileWithVault } from '@/lib/accounts';
 
 function Unlock() {
   const { ready } = useVaultGate('locked');
@@ -49,6 +50,8 @@ function Unlock() {
       useSession.getState().set({ status: 'unlocked' });
       await refreshVaultStatus();
       await vault.call('setAutoLock', { minutes: useMeta.getState().autoLockMinutes });
+      // Stored account metadata must match what this phrase derives before anything is shown.
+      if ((await reconcileWithVault()) === 'rebuilt') toast.info('Accounts reloaded from your wallet', 'Use Add account to restore more accounts from your phrase.');
       router.replace(next && next.startsWith('/') && !next.startsWith('//') ? next : '/home');
     } catch (err) {
       const code = err instanceof VaultClientError ? err.code : 'INTERNAL';

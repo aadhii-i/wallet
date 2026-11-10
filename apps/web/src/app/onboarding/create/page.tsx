@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AnimatePresence, motion } from 'motion/react';
 import { EyeOff, Lock, ShieldAlert } from 'lucide-react';
-import { checkPasswordStrength } from '@qd/wallet-core';
+import { checkPasswordStrength, makeAccountMeta } from '@qd/wallet-core';
 import { useVaultGate } from '@/lib/gate';
 import { useMeta, useSession, toast } from '@/lib/store';
 import { reportEvent } from '@/lib/sync';
@@ -36,7 +36,7 @@ export default function CreateWallet() {
     try {
       const { address } = await vault.call('create', { password: pw, words: 12 });
       useMeta.getState().reset();
-      useMeta.getState().setAccounts([{ index: 0, name: 'Account 1', address }]);
+      useMeta.getState().setAccounts([makeAccountMeta(0, address)]);
       useSession.getState().set({ status: 'unlocked', backedUp: false });
       void reportEvent('wallet_created');
       router.replace('/onboarding/backup');

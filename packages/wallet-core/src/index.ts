@@ -6,3 +6,4 @@ export * from './signer/types';
 export * from './signer/confirmation';
 export * from './signer/keyring';
 export * from './signer/hd-signer';
+export * from './accounts';

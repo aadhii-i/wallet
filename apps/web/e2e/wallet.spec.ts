@@ -30,7 +30,37 @@ async function useAnvilRpc(page: Page) {
   await page.getByLabel('RPC URL').fill(ANVIL);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByText('Custom RPC saved')).toBeVisible();
+  await openFromNav(page, 'Home');
+  await selectAnvil(page);
 }
+
+/** The wallet defaults to Sepolia; local chains are always an explicit choice. */
+async function selectAnvil(page: Page) {
+  await page.getByRole('button', { name: /^Network: .*Change network$/ }).click();
+  await page.getByRole('option', { name: /Localhost \(Anvil\)/ }).click();
+  await expect(page.getByRole('button', { name: /^Network: Localhost \(Anvil\)/ })).toBeVisible();
+}
+
+async function restore(page: Page, phrase: string) {
+  await page.goto('/onboarding');
+  await page.getByRole('link', { name: 'I have a recovery phrase' }).click();
+  await page.getByLabel('Word 1', { exact: true }).fill(phrase);
+  await page.getByRole('button', { name: 'Continue' }).click();
+  await page.getByLabel('New password', { exact: true }).fill(PASSWORD);
+  await page.getByLabel('Confirm password').fill(PASSWORD);
+  await page.getByRole('button', { name: 'Import wallet' }).click();
+  await expect(page.getByRole('heading', { name: 'Your wallet is ready' })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole('button', { name: 'Open wallet' }).click();
+}
+
+async function unlock(page: Page) {
+  await expect(page.getByRole('heading', { name: 'Welcome back' })).toBeVisible();
+  await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
+  await page.getByRole('button', { name: 'Unlock' }).click();
+  await expect(page).toHaveURL(/\/home/, { timeout: 20_000 });
+}
+
+const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
 
 test.describe('onboarding → receive → send', () => {
   test('creates a wallet, verifies backup, receives and sends ETH on Anvil', async ({ page }) => {
@@ -146,6 +176,64 @@ test.describe('import & unlock', () => {
     await expect(page).toHaveURL(/\/home/, { timeout: 20_000 });
   });
 
+  test('restores the phrase’s own accounts, adds HD accounts, and keeps them across reloads', async ({ page }) => {
+    await restore(page, ANVIL_MNEMONIC);
+    const header = page.locator('header');
+    // Restored wallet = the phrase's index-0 address, on Sepolia (never silently moved to Anvil).
+    await expect(header.getByText(short(ANVIL_ACCOUNT_0))).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Network: Ethereum Sepolia/ })).toBeVisible();
+
+    // Add account derives index 1 of the same phrase and selects it; a double click adds one account only.
+    await page.getByRole('button', { name: /Account: Account 1/ }).click();
+    await page.getByRole('button', { name: 'Add account', exact: true }).dblclick();
+    await expect(page.getByText('Account 2 created')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: /Account: Account 2/ })).toBeVisible();
+    await expect(header.getByText(short(RECIPIENT))).toBeVisible();
+    await page.getByRole('button', { name: /Account: Account 2/ }).click();
+    const accounts = page.getByRole('dialog', { name: 'Accounts' });
+    await expect(accounts.getByRole('listitem')).toHaveCount(2);
+
+    // Switching updates the header and account details.
+    await accounts.getByRole('button', { name: /Account 1/ }).first().click();
+    await expect(page.getByRole('button', { name: /Account: Account 1/ })).toBeVisible();
+    await page.getByRole('button', { name: 'Wallet menu' }).click();
+    await page.getByRole('menuitem', { name: 'Account details' }).click();
+    await expect(page.getByText("m/44'/60'/0'/0/0")).toBeVisible();
+    await page.keyboard.press('Escape');
+
+    // A reload locks the wallet; accounts persist and are re-verified against the vault on unlock.
+    await page.reload();
+    await unlock(page);
+    await page.getByRole('button', { name: /Account: Account 1/ }).click();
+    await expect(page.getByRole('dialog', { name: 'Accounts' }).getByRole('listitem')).toHaveCount(2);
+    await expect(page.getByRole('dialog', { name: 'Accounts' }).getByText(short(RECIPIENT))).toBeVisible();
+  });
+
+  test('replaces stored account metadata that does not match the vault', async ({ page }) => {
+    await restore(page, ANVIL_MNEMONIC);
+    await expect(page.locator('header').getByText(short(ANVIL_ACCOUNT_0))).toBeVisible();
+    // Corrupt the non-secret metadata: claim account 0 is some other address.
+    await page.evaluate(() => {
+      const raw = JSON.parse(localStorage.getItem('qd-meta')!);
+      raw.state.accounts[0].address = '0x000000000000000000000000000000000000dEaD';
+      localStorage.setItem('qd-meta', JSON.stringify(raw));
+    });
+    await page.reload();
+    await unlock(page);
+    await expect(page.getByText('Accounts reloaded from your wallet')).toBeVisible();
+    await expect(page.locator('header').getByText(short(ANVIL_ACCOUNT_0))).toBeVisible();
+  });
+
+  test('accepts 15-word phrases', async ({ page }) => {
+    await page.goto('/onboarding/import');
+    // Synthetic fixture (fixed entropy 0x7f…), not a real wallet.
+    await page.getByLabel('Word 1', { exact: true }).fill('legal winner thank year wave sausage worth useful legal winner thank year wave sausage wise');
+    await expect(page.getByLabel('Word 15', { exact: true })).toHaveValue('wise');
+    await expect(page.getByLabel('Word 16', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Continue' })).toBeEnabled();
+  });
+
   test('rejects an invalid recovery phrase locally', async ({ page }) => {
     await page.goto('/onboarding/import');
     await page.getByLabel('Word 1', { exact: true }).fill(ANVIL_MNEMONIC.replace('junk', 'test'));
@@ -167,6 +255,7 @@ test.describe('full stack through wallet-api', () => {
     await page.getByLabel('Confirm password').fill(PASSWORD);
     await page.getByRole('button', { name: 'Import wallet' }).click();
     await page.getByRole('button', { name: 'Open wallet' }).click({ timeout: 30_000 });
+    await selectAnvil(page);
 
     // Balance comes through the authenticated proxy (no custom RPC configured) and is valued in USD.
     await expect(page.getByLabel('Total balance')).toContainText('$', { timeout: 30_000 });

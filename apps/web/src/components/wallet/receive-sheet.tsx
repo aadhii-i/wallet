@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
 import QRCode from 'qrcode';
 import { ExternalLink, Share2 } from 'lucide-react';
+import { evmDerivationPath } from '@qd/wallet-core';
 import { useNetwork } from '@/lib/hooks';
 import { useSelectedAccount, toast } from '@/lib/store';
 import { Button } from '../ui/button';
@@ -34,6 +35,9 @@ export function ReceiveSheet({ open, onOpenChange }: { open: boolean; onOpenChan
           <Identicon address={account.address} size={24} />
           <span className="font-semibold">{account.name}</span>
         </div>
+        <p className="mb-3 text-xs text-subtle">
+          Derivation path <span className="font-mono">{evmDerivationPath(account.index)}</span>
+        </p>
         <div className="relative mb-4 h-56 w-56 rounded-3xl bg-white p-3 shadow-sm ring-1 ring-line">
           {qr ? (
             <motion.img initial={{ opacity: 0, scale: 0.96 }} animate={{ opacity: 1, scale: 1 }} transition={t.base} src={qr} alt={`QR code for ${account.address}`} className="h-full w-full" />

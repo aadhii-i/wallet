@@ -10,6 +10,7 @@ import {
   ConfirmationRegistry,
   SignerError,
   VaultError,
+  assertStrongPassword,
   decryptVault,
   encryptVault,
   generateMnemonic,
@@ -128,6 +129,12 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
 
   async create({ password, words }) {
     if (await loadVault()) throw new OpError('VAULT_EXISTS', 'A wallet already exists on this device');
+    try {
+      assertStrongPassword(password);
+    } catch (e) {
+      if (e instanceof VaultError && e.code === 'WEAK_PASSWORD') throw new OpError('WEAK_PASSWORD', e.message);
+      throw e;
+    }
     const contents: VaultContents = {
       mnemonic: generateMnemonic(words === 24 ? 256 : 128),
       createdAt: new Date().toISOString(),
@@ -140,6 +147,12 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
   async import({ mnemonic, password }) {
     // Never silently replace a wallet: the user must remove it first (audit finding 10).
     if (await loadVault()) throw new OpError('VAULT_EXISTS', 'A wallet already exists on this device');
+    try {
+      assertStrongPassword(password);
+    } catch (e) {
+      if (e instanceof VaultError && e.code === 'WEAK_PASSWORD') throw new OpError('WEAK_PASSWORD', e.message);
+      throw e;
+    }
     const v = validateMnemonic(mnemonic);
     if (!v.ok) throw new OpError('INVALID_PHRASE', 'Invalid recovery phrase');
     // An imported phrase already exists elsewhere, so it counts as backed up.
@@ -198,6 +211,12 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
 
   async changePassword({ oldPassword, newPassword }) {
     const contents = await verifyAgainstVault(oldPassword);
+    try {
+      assertStrongPassword(newPassword);
+    } catch (e) {
+      if (e instanceof VaultError && e.code === 'WEAK_PASSWORD') throw new OpError('WEAK_PASSWORD', e.message);
+      throw e;
+    }
     await kv.set('vault', await encryptVault(contents, newPassword));
   },
 
