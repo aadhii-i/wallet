@@ -1,6 +1,7 @@
 'use client';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
+import type { BitcoinAddressType } from '@qd/blockchain';
 import type { TxStatus } from '@qd/shared-types';
 import type { HDAccountMeta } from '@qd/wallet-core';
 
@@ -36,6 +37,14 @@ interface MetaState {
   hideBalances: boolean;
   /** "chainId:address" → last nonce this device broadcast (not secret). */
   nonces: Record<string, number>;
+  /** Preferred Bitcoin receive/send scheme. P2WPKH is the default (ADR-0017). */
+  btcAddressType: BitcoinAddressType;
+  /** `${networkId}|${addressType}|${hdIndex}` → public address. No key material. */
+  btcAddresses: Record<string, string>;
+  /** `${networkId}|${addressType}` → the backend already watches this descriptor. */
+  btcWatchRegistered: Record<string, boolean>;
+  /** hdIndex → Hedera Account ID (shard.realm.num). No key material. */
+  hederaAccountIds: Record<number, string>;
 
   setNonces(n: Record<string, number>): void;
   setAccounts(accounts: AccountMeta[]): void;
@@ -50,6 +59,10 @@ interface MetaState {
   rememberRecipient(from: string, to: string): void;
   upsertLocalTx(tx: LocalTx): void;
   toggleHideBalances(): void;
+  setBtcAddressType(t: BitcoinAddressType): void;
+  setBtcAddress(key: string, address: string): void;
+  setBtcWatchRegistered(key: string, registered: boolean): void;
+  setHederaAccountId(hdIndex: number, accountId: string): void;
   reset(): void;
 }
 
@@ -66,6 +79,10 @@ const initial = {
   localTxs: [] as LocalTx[],
   hideBalances: false,
   nonces: {} as Record<string, number>,
+  btcAddressType: 'p2wpkh' as BitcoinAddressType,
+  btcAddresses: {} as Record<string, string>,
+  btcWatchRegistered: {} as Record<string, boolean>,
+  hederaAccountIds: {} as Record<number, string>,
 };
 
 export const useMeta = create<MetaState>()(
@@ -101,6 +118,13 @@ export const useMeta = create<MetaState>()(
           return { localTxs: [tx, ...rest].slice(0, 300) };
         }),
       toggleHideBalances: () => set((s) => ({ hideBalances: !s.hideBalances })),
+      setBtcAddressType: (btcAddressType) => set({ btcAddressType }),
+      setBtcAddress: (key, address) =>
+        set((s) => ({ btcAddresses: { ...s.btcAddresses, [key]: address } })),
+      setBtcWatchRegistered: (key, registered) =>
+        set((s) => ({ btcWatchRegistered: { ...s.btcWatchRegistered, [key]: registered } })),
+      setHederaAccountId: (hdIndex, accountId) =>
+        set((s) => ({ hederaAccountIds: { ...s.hederaAccountIds, [hdIndex]: accountId } })),
       // Network choice and custom RPCs are device preferences, not wallet data:
       // creating or restoring a wallet must not silently move the user to another chain.
       reset: () => set((s) => ({ ...initial, networkId: s.networkId, customRpc: s.customRpc })),

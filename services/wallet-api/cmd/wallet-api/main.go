@@ -24,7 +24,9 @@ import (
 
 	"github.com/qdwallet/wallet-api/internal/account"
 	"github.com/qdwallet/wallet-api/internal/auth"
+	"github.com/qdwallet/wallet-api/internal/blockchain/btc"
 	"github.com/qdwallet/wallet-api/internal/blockchain/evm"
+	"github.com/qdwallet/wallet-api/internal/blockchain/hedera"
 	"github.com/qdwallet/wallet-api/internal/platform/config"
 	"github.com/qdwallet/wallet-api/internal/platform/db"
 	"github.com/qdwallet/wallet-api/internal/platform/httpx"
@@ -155,7 +157,6 @@ func run() error {
 	authSvc := auth.NewService(st, km)
 	acctSvc := account.NewService(st)
 	txSvc := transaction.NewService(st)
-
 	var priceProvider prices.Provider
 	if cfg.PriceProvider == config.PriceCoingecko {
 		priceProvider = prices.NewCachingProvider(prices.NewCoingeckoProvider(cfg.CoingeckoAPIKey))
@@ -172,10 +173,33 @@ func run() error {
 		go tracker.Run(trackerCtx)
 	}
 
+	// --- Bitcoin (Esplora REST API) -----------------------------------------
+	// Bitcoin is off unless BTC_ESPLORA_URL is set. The server never holds
+	// spending keys: it only sees public addresses and signed transactions.
+	var btcSvc *btc.Service
+	if cfg.BTCEnabled() {
+		esplora := btc.NewEsplora(btc.EsploraConfig{
+			BaseURL: cfg.BTCEsploraURL,
+		})
+		btcSvc = btc.NewService(esplora, btc.Network(cfg.BTCNetwork), cfg.BTCFeeFloorSatVB, cfg.BTCMaxFeeSatVB, logger)
+		logger.Info("bitcoin support enabled",
+			slog.String("network", cfg.BTCNetwork),
+			slog.String("esplora", cfg.BTCEsploraURL),
+		)
+	}
+	btcHandlers := btc.NewHandlers(btcSvc)
+
+	// --- Hedera (Mirror Node REST API) -------------------------------------
+	// Hedera always wires up with the default public testnet Mirror Node unless
+	// HEDERA_MIRROR_URL overrides it.
+	hederaMirror := hedera.NewMirror(hedera.MirrorConfig{BaseURL: cfg.HederaMirrorURL})
+	hederaSvc := hedera.NewService(hederaMirror)
+	hederaHandlers := hedera.NewHandlers(hederaSvc)
+
 	// --- HTTP handlers -----------------------------------------------------------
 	cookies := auth.CookieNames{Access: cfg.AccessCookieName(), Refresh: cfg.RefreshCookieName()}
 	authHandlers := auth.NewHandlers(authSvc, cfg.AllowedOrigins, cfg.CookieSecure, cookies, csrfKey, ipHashKey, cfg.TrustedProxies)
-	acctHandlers := account.NewHandlers(acctSvc, st)
+	acctHandlers := account.NewHandlers(acctSvc, st, hederaSvc)
 	txHandlers := transaction.NewHandlers(txSvc, st)
 	activityHandlers := transaction.NewActivityHandlers(st, providerRegistry(historyByNetwork))
 	evmHandlers := evm.NewHandlers(registry)
@@ -245,6 +269,16 @@ func run() error {
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RateLimitBySession(sessionRateLimit))
 			r.Post("/v1/rpc/evm/{chainId}", rpcHandler.ServeHTTP)
+
+			// Bitcoin: purpose-built endpoints only, no RPC passthrough.
+			r.Get("/v1/btc/{network}/fees", btcHandlers.GetFees)
+			r.Get("/v1/btc/{network}/address/{address}/utxos", btcHandlers.GetUTXOs)
+			r.Get("/v1/btc/{network}/address/{address}/history", btcHandlers.GetHistory)
+			r.Get("/v1/btc/{network}/tx/{hash}", btcHandlers.GetTransaction)
+			r.Post("/v1/btc/{network}/broadcast", btcHandlers.Broadcast)
+
+			// Hedera: Mirror Node balance lookup.
+			r.Get("/v1/hedera/{network}/account/{accountId}/balance", hederaHandlers.GetBalance)
 		})
 	})
 

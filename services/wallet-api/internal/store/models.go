@@ -113,8 +113,10 @@ type Account struct {
 type NetworkFamily string
 
 const (
-	FamilyEVM    NetworkFamily = "evm"
-	FamilyMonero NetworkFamily = "monero"
+	FamilyEVM     NetworkFamily = "evm"
+	FamilyBitcoin NetworkFamily = "bitcoin"
+	FamilyMonero  NetworkFamily = "monero"
+	FamilyHedera  NetworkFamily = "hedera"
 )
 
 type Address struct {

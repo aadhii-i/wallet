@@ -13,6 +13,14 @@ import (
 
 var ErrHDIndexTaken = errors.New("account: hd index already used in this wallet")
 
+// HederaAccountVerifier is a minimal interface for verifying that a Hedera
+// Account ID is controlled by the given secp256k1 public key.
+// Defined here (not in the hedera package) to avoid a direct dependency on
+// the hedera package from the account package (dependency inversion).
+type HederaAccountVerifier interface {
+	VerifyAccountOwnership(ctx context.Context, accountID, hexPubKey string) error
+}
+
 type Service struct {
 	store store.Store
 }
@@ -139,5 +147,83 @@ func (s *Service) RegisterAddress(ctx context.Context, userID, accountID uuid.UU
 		return nil, err
 	}
 	_ = audit.Record(ctx, s.store.AuditLogs(), "user", userID.String(), "address_register", "address", a.ID.String(), map[string]any{"accountId": accountID.String()})
+	return a, nil
+}
+
+// RegisterBitcoinAddress verifies a secp256k1 ownership proof and stores the
+// Bitcoin address against the account.
+//
+// network must be "mainnet" or "testnet4".
+// addressType must be "p2wpkh" or "p2tr".
+// proof must be in the format produced by btcOwnershipProof in wallet-core:
+//
+//	"0x" + hex(compressedPubKey(33 bytes) || r(32 bytes) || s(32 bytes))
+func (s *Service) RegisterBitcoinAddress(ctx context.Context, userID, accountID uuid.UUID, network, addressType, address, proof string) (*store.Address, error) {
+	if _, err := s.store.Accounts().Get(ctx, userID, accountID); err != nil {
+		return nil, err
+	}
+	normalized := normalizeBtcAddress(address)
+	if err := VerifyBtcAddressProof(accountID.String(), network, normalized, userID.String(), addressType, proof); err != nil {
+		return nil, err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		id = uuid.New()
+	}
+	a := &store.Address{
+		ID:            id,
+		AccountID:     accountID,
+		NetworkFamily: store.FamilyBitcoin,
+		Address:       normalized,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := s.store.Addresses().Create(ctx, a); err != nil && !errors.Is(err, store.ErrConflict) {
+		return nil, err
+	}
+	_ = audit.Record(ctx, s.store.AuditLogs(), "user", userID.String(), "btc_address_register", "address", a.ID.String(), map[string]any{"accountId": accountID.String(), "network": network, "addressType": addressType})
+	return a, nil
+}
+
+// normalizeBtcAddress lowercases a Bitcoin address (bech32/bech32m addresses
+// are case-insensitive; lowercase is the canonical form).
+func normalizeBtcAddress(address string) string {
+	result := make([]byte, len(address))
+	for i := 0; i < len(address); i++ {
+		c := address[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		result[i] = c
+	}
+	return string(result)
+}
+
+// RegisterHederaAddress verifies that hexPubKey controls hederaAccountID on
+// the Mirror Node, then stores the Hedera Account ID as the address.
+//
+// mirror is the HederaAccountVerifier — typically *hedera.Service, but kept
+// as an interface so this package does not import the hedera package.
+func (s *Service) RegisterHederaAddress(ctx context.Context, userID, accountID uuid.UUID, hederaAccountID, hexPubKey string, mirror HederaAccountVerifier) (*store.Address, error) {
+	if _, err := s.store.Accounts().Get(ctx, userID, accountID); err != nil {
+		return nil, err
+	}
+	if err := mirror.VerifyAccountOwnership(ctx, hederaAccountID, hexPubKey); err != nil {
+		return nil, err
+	}
+	id, err := uuid.NewV7()
+	if err != nil {
+		id = uuid.New()
+	}
+	a := &store.Address{
+		ID:            id,
+		AccountID:     accountID,
+		NetworkFamily: store.FamilyHedera,
+		Address:       hederaAccountID,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := s.store.Addresses().Create(ctx, a); err != nil && !errors.Is(err, store.ErrConflict) {
+		return nil, err
+	}
+	_ = audit.Record(ctx, s.store.AuditLogs(), "user", userID.String(), "hedera_address_register", "address", a.ID.String(), map[string]any{"accountId": accountID.String()})
 	return a, nil
 }

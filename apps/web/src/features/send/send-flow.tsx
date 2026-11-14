@@ -18,6 +18,7 @@ import {
   type WalletError,
 } from '@qd/blockchain';
 import type { EvmFeeParams, EvmUnsignedTx } from '@qd/evm';
+import type { EvmNetwork } from '@qd/blockchain';
 import {
   assessFee,
   assessNonce,
@@ -31,7 +32,7 @@ import {
   type RiskFinding,
 } from '@qd/transaction';
 import type { ConfirmationToken } from '@qd/wallet-core';
-import { useAdapter, useNetwork, usePrices, useValuedHoldings, type ValuedHolding } from '@/lib/hooks';
+import { useAdapter, useEvmAdapter, useNetwork, usePrices, useValuedHoldings, type ValuedHolding } from '@/lib/hooks';
 import { getApi } from '@/lib/api';
 import { useMeta, useSelectedAccount, useSession, toast } from '@/lib/store';
 import { vault } from '@/lib/vault-client';
@@ -41,6 +42,7 @@ import { Sheet } from '@/components/ui/sheet';
 import { Skeleton } from '@/components/ui/spinner';
 import { NetworkDot } from '@/components/wallet/network-sheet';
 import { stepVariants, t } from '@/components/ui/motion';
+import { BitcoinSendFlow } from './bitcoin-send-flow';
 
 type Step = 'asset' | 'recipient' | 'amount' | 'review';
 const ORDER: Step[] = ['asset', 'recipient', 'amount', 'review'];
@@ -53,11 +55,19 @@ interface Prepared {
 }
 
 export function SendFlow() {
+  const network = useNetwork();
+  // Bitcoin payloads are PSBTs, and its review screen prices in sat/vB, so it has
+  // its own flow. Both branches share the same worker confirmation model.
+  if (network.family === 'bitcoin') return <BitcoinSendFlow network={network} />;
+  if (network.family === 'evm') return <EvmSendFlow network={network} />;
+  return null;
+}
+
+function EvmSendFlow({ network }: { network: EvmNetwork }) {
   const router = useRouter();
   const params = useSearchParams();
   const account = useSelectedAccount();
-  const network = useNetwork();
-  const adapter = useAdapter();
+  const adapter = useEvmAdapter();
   const { valued, holdings } = useValuedHoldings(account?.address);
   const accounts = useMeta((s) => s.accounts);
   const knownRecipients = useMeta((s) => (account ? s.knownRecipients[account.address.toLowerCase()] : undefined));
@@ -148,6 +158,7 @@ export function SendFlow() {
           )}
           {step === 'review' && asset && (
             <ReviewAndSend
+              network={network}
               asset={asset}
               from={account.address}
               accountIndex={account.index}
@@ -427,6 +438,7 @@ function AmountStep({
 // ---------------------------------------------------------------- review + status
 
 function ReviewAndSend(props: {
+  network: EvmNetwork;
   asset: Asset;
   from: string;
   accountIndex: number;
@@ -441,8 +453,8 @@ function ReviewAndSend(props: {
   onEdit: () => void;
 }) {
   const { asset, from, to, amount, tier } = props;
-  const adapter = useAdapter();
-  const network = useNetwork();
+  const adapter = useEvmAdapter();
+  const network = props.network;
   const qc = useQueryClient();
   const router = useRouter();
   const upsertLocalTx = useMeta((s) => s.upsertLocalTx);
@@ -729,7 +741,7 @@ function ReviewAndSend(props: {
   );
 }
 
-function tierLabel(t: FeeTier) {
+export function tierLabel(t: FeeTier) {
   return t === 'low' ? 'Low' : t === 'market' ? 'Market' : 'Aggressive';
 }
 
@@ -781,7 +793,7 @@ function FeeSheet({
   );
 }
 
-function ReviewRow({ label, children, strong }: { label: string; children: React.ReactNode; strong?: boolean }) {
+export function ReviewRow({ label, children, strong }: { label: string; children: React.ReactNode; strong?: boolean }) {
   return (
     <div className="flex items-start justify-between gap-4 px-4 py-3.5 text-sm">
       <dt className="shrink-0 pt-0.5 text-muted">{label}</dt>
@@ -790,7 +802,7 @@ function ReviewRow({ label, children, strong }: { label: string; children: React
   );
 }
 
-function RiskList({ findings, acks, onAck }: { findings: RiskFinding[]; acks?: Record<string, boolean>; onAck?: (code: string) => void }) {
+export function RiskList({ findings, acks, onAck }: { findings: RiskFinding[]; acks?: Record<string, boolean>; onAck?: (code: string) => void }) {
   if (findings.length === 0) return null;
   return (
     <ul className="space-y-2">
@@ -824,7 +836,7 @@ function RiskList({ findings, acks, onAck }: { findings: RiskFinding[]; acks?: R
   );
 }
 
-function ErrorPanel({ error, onRetry, onEdit }: { error: WalletError; onRetry?: () => void; onEdit: () => void }) {
+export function ErrorPanel({ error, onRetry, onEdit }: { error: WalletError; onRetry?: () => void; onEdit: () => void }) {
   const [details, setDetails] = useState(false);
   return (
     <div className="flex flex-1 flex-col items-center pt-6 text-center">
@@ -853,7 +865,7 @@ function ErrorPanel({ error, onRetry, onEdit }: { error: WalletError; onRetry?: 
   );
 }
 
-function StatusView({
+export function StatusView({
   status,
   error,
   hash,

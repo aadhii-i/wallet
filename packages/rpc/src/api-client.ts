@@ -2,9 +2,16 @@ import type {
   ActivityItem,
   ApiAccount,
   ApiAddress,
+  ApiBtcBroadcastResult,
+  ApiBtcFees,
+  ApiBtcTransaction,
+  ApiBtcUtxo,
+  ApiHederaBalance,
   ApiNetwork,
   ApiTransaction,
   ApiWallet,
+  BitcoinAddressType,
+  BitcoinNetworkName,
   Challenge,
   ClientSecurityEventType,
   Device,
@@ -270,5 +277,68 @@ export class ApiClient {
   /** JSON-RPC over the authenticated proxy. Provider keys never reach the client. */
   async rpc(chainId: number, body: unknown): Promise<unknown> {
     return this.json<unknown>('POST', `/v1/rpc/evm/${chainId}`, body);
+  }
+
+  // ---------- Bitcoin ----------
+  // wallets-api owns the Bitcoin Core connection; clients get purpose-built
+  // endpoints only, never arbitrary RPC.
+
+  btcFees(network: BitcoinNetworkName) {
+    return this.json<{ fees: ApiBtcFees }>('GET', `/v1/btc/${network}/fees`);
+  }
+  btcUtxos(network: BitcoinNetworkName, address: string) {
+    return this.json<{ utxos: ApiBtcUtxo[] }>(
+      'GET',
+      `/v1/btc/${network}/address/${encodeURIComponent(address)}/utxos`,
+    );
+  }
+  btcHistory(network: BitcoinNetworkName, address: string, cursor?: string) {
+    const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+    return this.json<{ items: ActivityItem[]; nextCursor?: string }>(
+      'GET',
+      `/v1/btc/${network}/address/${encodeURIComponent(address)}/history${q}`,
+    );
+  }
+  btcTransaction(network: BitcoinNetworkName, hash: string) {
+    return this.json<ApiBtcTransaction>(
+      'GET',
+      `/v1/btc/${network}/tx/${encodeURIComponent(hash)}`,
+    );
+  }
+  btcBroadcast(network: BitcoinNetworkName, rawHex: string) {
+    return this.json<ApiBtcBroadcastResult>('POST', `/v1/btc/${network}/broadcast`, { raw: rawHex });
+  }
+  /** Registers a public Bitcoin address; `proof` is `0x` + pubkey(33) + sig(64). */
+  registerBtcAddress(
+    accountId: string,
+    address: string,
+    addressType: BitcoinAddressType,
+    proof: string,
+  ) {
+    return this.json<ApiAddress>('PUT', `/v1/accounts/${accountId}/addresses`, {
+      networkFamily: 'bitcoin',
+      address,
+      addressType,
+      proof,
+    });
+  }
+
+  // ---------- Hedera ----------
+
+  /** Fetches the HBAR balance for a Hedera Testnet account. */
+  hederaBalance(accountId: string) {
+    return this.json<ApiHederaBalance>(
+      'GET',
+      `/v1/hedera/testnet/account/${encodeURIComponent(accountId)}/balance`,
+    );
+  }
+
+  /** Registers a Hedera Account ID against an HD account. */
+  registerHederaAddress(accountId: string, hederaAccountId: string, hexPubKey: string) {
+    return this.json<ApiAddress>('PUT', `/v1/accounts/${accountId}/addresses`, {
+      networkFamily: 'hedera',
+      address: hederaAccountId,
+      hexPubKey,
+    });
   }
 }

@@ -14,12 +14,15 @@ import (
 )
 
 type Handlers struct {
-	svc   *Service
-	store store.Store
+	svc           *Service
+	store         store.Store
+	hederaVerifier HederaAccountVerifier
 }
 
-func NewHandlers(svc *Service, st store.Store) *Handlers {
-	return &Handlers{svc: svc, store: st}
+// NewHandlers builds the account handlers.
+// hederaVerifier may be nil; in that case the hedera registration path returns 503.
+func NewHandlers(svc *Service, st store.Store, hederaVerifier HederaAccountVerifier) *Handlers {
+	return &Handlers{svc: svc, store: st, hederaVerifier: hederaVerifier}
 }
 
 func walletJSON(w *store.Wallet, accounts []map[string]any) map[string]any {
@@ -169,6 +172,11 @@ type registerAddressRequest struct {
 	NetworkFamily string `json:"networkFamily"`
 	Address       string `json:"address"`
 	Proof         string `json:"proof"`
+	// Bitcoin-only fields; ignored for EVM registrations.
+	Network     string `json:"network"`
+	AddressType string `json:"addressType"`
+	// Hedera-only fields.
+	HexPubKey string `json:"hexPubKey"`
 }
 
 func (h *Handlers) RegisterAddress(w http.ResponseWriter, r *http.Request) {
@@ -179,18 +187,73 @@ func (h *Handlers) RegisterAddress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req registerAddressRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NetworkFamily == "" || req.Address == "" || req.Proof == "" {
-		httpx.BadRequest(w, r, "INVALID_BODY", "networkFamily, address and proof are required")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.NetworkFamily == "" || req.Address == "" {
+		httpx.BadRequest(w, r, "INVALID_BODY", "networkFamily and address are required")
 		return
 	}
-	addr, err := h.svc.RegisterAddress(r.Context(), p.UserID, accountID, req.NetworkFamily, req.Address, req.Proof)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			httpx.NotFound(w, r, "NOT_FOUND", "")
+
+	switch req.NetworkFamily {
+	case "evm":
+		if req.Proof == "" {
+			httpx.BadRequest(w, r, "INVALID_BODY", "proof is required for evm registrations")
 			return
 		}
-		httpx.BadRequest(w, r, "INVALID_PROOF", err.Error())
-		return
+		addr, err := h.svc.RegisterAddress(r.Context(), p.UserID, accountID, req.NetworkFamily, req.Address, req.Proof)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.NotFound(w, r, "NOT_FOUND", "")
+				return
+			}
+			httpx.BadRequest(w, r, "INVALID_PROOF", err.Error())
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, addressJSON(addr))
+
+	case "bitcoin":
+		if req.Proof == "" {
+			httpx.BadRequest(w, r, "INVALID_BODY", "proof is required for bitcoin registrations")
+			return
+		}
+		if req.Network == "" || req.AddressType == "" {
+			httpx.BadRequest(w, r, "INVALID_BODY", "network and addressType are required for bitcoin registrations")
+			return
+		}
+		addr, err := h.svc.RegisterBitcoinAddress(r.Context(), p.UserID, accountID, req.Network, req.AddressType, req.Address, req.Proof)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.NotFound(w, r, "NOT_FOUND", "")
+				return
+			}
+			if errors.Is(err, ErrInvalidBtcProof) {
+				httpx.BadRequest(w, r, "INVALID_PROOF", "bitcoin address ownership proof did not verify")
+				return
+			}
+			httpx.BadRequest(w, r, "INVALID_PROOF", err.Error())
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, addressJSON(addr))
+
+	case "hedera":
+		if h.hederaVerifier == nil {
+			httpx.WriteProblem(w, r, 503, "HEDERA_NOT_CONFIGURED", "Service unavailable", "hedera verification is not configured")
+			return
+		}
+		if req.HexPubKey == "" {
+			httpx.BadRequest(w, r, "INVALID_BODY", "hexPubKey is required for hedera registrations")
+			return
+		}
+		addr, err := h.svc.RegisterHederaAddress(r.Context(), p.UserID, accountID, req.Address, req.HexPubKey, h.hederaVerifier)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				httpx.NotFound(w, r, "NOT_FOUND", "")
+				return
+			}
+			httpx.BadRequest(w, r, "INVALID_OWNERSHIP", err.Error())
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, addressJSON(addr))
+
+	default:
+		httpx.BadRequest(w, r, "INVALID_BODY", "unsupported networkFamily")
 	}
-	httpx.WriteJSON(w, http.StatusOK, addressJSON(addr))
 }

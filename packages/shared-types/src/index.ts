@@ -54,10 +54,12 @@ export interface Device {
 
 export interface ApiAddress {
   id: string;
-  networkFamily: 'evm' | 'bitcoin';
+  networkFamily: 'evm' | 'bitcoin' | 'hedera';
   address: string;
   /** Bitcoin only: which derivation/address scheme the address belongs to. */
   addressType?: 'p2wpkh' | 'p2tr';
+  /** Hedera only: the shard.realm.num account identifier. */
+  hederaAccountId?: string;
 }
 
 export interface ApiAccount {
@@ -187,4 +189,14 @@ export interface ApiBtcTransaction {
 
 export interface ApiBtcBroadcastResult {
   txid: string;
+}
+
+// ---------------------------------------------------------------------------
+// Hedera (`/v1/hedera/*`)
+// ---------------------------------------------------------------------------
+
+export interface ApiHederaBalance {
+  accountId: string;
+  tinybars: number;
+  hbar: string;
 }

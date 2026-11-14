@@ -46,7 +46,7 @@ func newServer(t *testing.T) (*httptest.Server, store.Store) {
 	csrfKey := []byte("csrf-key")
 	authH := auth.NewHandlers(authSvc, []string{testOrigin}, false, auth.CookieNames{Access: "qd_at", Refresh: "qd_rt"}, csrfKey, []byte("ip-key"), nil)
 	acctSvc := account.NewService(st)
-	acctH := account.NewHandlers(acctSvc, st)
+	acctH := account.NewHandlers(acctSvc, st, nil)
 
 	r := chi.NewRouter()
 	r.Post("/v1/auth/challenge", authH.CreateChallenge)
