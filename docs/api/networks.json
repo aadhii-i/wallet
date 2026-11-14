@@ -1,5 +1,6 @@
 {
   "$comment": "Canonical EVM network table shared by the TypeScript client registry (packages/blockchain/src/networks.ts) and the Go server registry (services/wallet-api/internal/blockchain/evm/network.go). Only the fields both registries model are listed here; client-only presentation fields (explorer, accent, feeModel, feeStrategy, blockTimeMs, confirmationsForFinal, feeWarningNative, faucetUrl, shortName) stay in the TypeScript registry. Both test suites assert against this file, so a chain added on one side alone fails CI. spec 11.3: 'The registry is data.'",
+  "$commentBitcoin": "Bitcoin networks are listed separately: they have no chain id, so they do not belong to the chain-id-keyed table above. The client registry (packages/blockchain/src/networks.ts) and the Go Bitcoin registry (services/wallet-api/internal/blockchain/btc) both assert against this list.",
   "networks": [
     {
       "id": "eth-mainnet",
@@ -72,6 +73,34 @@
       "kind": "local",
       "nativeSymbol": "ETH",
       "nativeDecimals": 18
+    }
+  ],
+  "bitcoinNetworks": [
+    {
+      "id": "btc-mainnet",
+      "chain": "mainnet",
+      "name": "Bitcoin",
+      "kind": "mainnet",
+      "nativeSymbol": "BTC",
+      "nativeDecimals": 8
+    },
+    {
+      "id": "btc-testnet4",
+      "chain": "testnet4",
+      "name": "Bitcoin Testnet4",
+      "kind": "testnet",
+      "nativeSymbol": "BTC",
+      "nativeDecimals": 8
+    }
+  ],
+  "hederaNetworks": [
+    {
+      "id": "hedera-testnet",
+      "chain": "testnet",
+      "name": "Hedera Testnet",
+      "kind": "testnet",
+      "nativeSymbol": "HBAR",
+      "nativeDecimals": 8
     }
   ]
 }

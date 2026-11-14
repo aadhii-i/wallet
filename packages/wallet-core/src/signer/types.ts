@@ -1,4 +1,4 @@
-export type ChainFamily = 'evm' | 'monero';
+export type ChainFamily = 'evm' | 'bitcoin' | 'monero' | 'hedera';
 export type SignerKind = 'hd' | 'mpc' | 'qd';
 export type Hex = `0x${string}`;
 
@@ -20,6 +20,20 @@ export type SigningPayload =
       from: Hex;
       /** Raw message bytes (hex). EIP-191 prefix is applied by the signer. */
       message: Hex;
+    }
+  | {
+      /**
+       * Bitcoin PSBT (base64). `packages/bitcoin` builds it and re-parses it after
+       * signing; the signer only needs the account key, so wallet-core stays free
+       * of chain libraries.
+       */
+      kind: 'btc-psbt';
+      network: 'mainnet' | 'testnet4';
+      /** Address that owns the inputs; must belong to the selected account. */
+      from: string;
+      addressType: 'p2wpkh' | 'p2tr';
+      /** Unsigned PSBT, base64. */
+      psbt: string;
     };
 
 export interface AccountRef {
@@ -46,12 +60,13 @@ export interface SigningRequest {
 
 export type SignatureResult =
   | { kind: 'evm-ecdsa'; signerKind: SignerKind; r: Hex; s: Hex; yParity: 0 | 1 }
-  | { kind: 'evm-personal'; signerKind: SignerKind; signature: Hex };
+  | { kind: 'evm-personal'; signerKind: SignerKind; signature: Hex }
+  | { kind: 'btc-psbt'; signerKind: SignerKind; /** Signed PSBT, base64. */ psbt: string };
 
 export interface Signer {
   readonly kind: SignerKind;
   supports(chainFamily: ChainFamily): boolean;
-  getAddress(account: AccountRef, chainFamily: ChainFamily): Promise<Hex>;
+  getAddress(account: AccountRef, chainFamily: ChainFamily): Promise<string>;
   sign(request: SigningRequest): Promise<SignatureResult>;
 }
 
