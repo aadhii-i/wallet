@@ -23,6 +23,12 @@ importers:
       '@qd/evm':
         specifier: workspace:*
         version: link:../../packages/evm
+      '@qd/qd-account':
+        specifier: workspace:*
+        version: link:../../packages/qd-account
+      '@qd/qd-crypto':
+        specifier: workspace:*
+        version: link:../../packages/qd-crypto
       '@qd/rpc':
         specifier: workspace:*
         version: link:../../packages/rpc
@@ -138,6 +144,25 @@ importers:
         specifier: 5.0.1
         version: 5.0.1(@types/node@24.13.6)(vite@8.3.1(@types/node@24.13.6)(jiti@2.7.0))
 
+  packages/qd-account:
+    dependencies:
+      '@qd/qd-crypto':
+        specifier: workspace:*
+        version: link:../qd-crypto
+      viem:
+        specifier: 2.56.8
+        version: 2.56.8(typescript@6.0.3)
+    devDependencies:
+      '@types/node':
+        specifier: 24.13.6
+        version: 24.13.6
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.13.6)(vite@8.3.1(@types/node@24.13.6)(jiti@2.7.0))
+
   packages/qd-crypto:
     dependencies:
       '@noble/hashes':
@@ -157,9 +182,21 @@ importers:
         specifier: workspace:*
         version: link:../shared-types
     devDependencies:
+      '@qd/qd-account':
+        specifier: workspace:*
+        version: link:../qd-account
+      '@qd/qd-crypto':
+        specifier: workspace:*
+        version: link:../qd-crypto
+      '@qd/wallet-core':
+        specifier: workspace:*
+        version: link:../wallet-core
       typescript:
         specifier: 6.0.3
         version: 6.0.3
+      viem:
+        specifier: 2.56.8
+        version: 2.56.8(typescript@6.0.3)
       vitest:
         specifier: 5.0.1
         version: 5.0.1(@types/node@24.13.6)(vite@8.3.1(@types/node@24.13.6)(jiti@2.7.0))
@@ -200,6 +237,12 @@ importers:
 
   packages/wallet-core:
     dependencies:
+      '@hpke/core':
+        specifier: 1.10.1
+        version: 1.10.1
+      '@hpke/hybridkem-x-wing':
+        specifier: 0.7.1
+        version: 0.7.1
       '@noble/ciphers':
         specifier: 2.4.0
         version: 2.4.0
@@ -209,6 +252,9 @@ importers:
       '@noble/hashes':
         specifier: 2.4.0
         version: 2.4.0
+      '@qd/qd-crypto':
+        specifier: workspace:*
+        version: link:../qd-crypto
       '@scure/bip32':
         specifier: 2.4.0
         version: 2.4.0
@@ -216,6 +262,9 @@ importers:
         specifier: 2.4.0
         version: 2.4.0
     devDependencies:
+      '@noble/post-quantum':
+        specifier: 0.7.1
+        version: 0.7.1
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -237,6 +286,18 @@ packages:
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
+
+  '@hpke/common@1.13.0':
+    resolution: {integrity: sha512-PqaJR89RWJQmt/WOGuBLrcrtXtEMbWu91XIbxDjKDTDgKvqvhlxOzQ9BAf9a0Q+yqqbTtQ0pK6KUyVi2WMehbA==}
+    engines: {node: '>=16.0.0'}
+
+  '@hpke/core@1.10.1':
+    resolution: {integrity: sha512-VZOk0rHC4vPsbW/fIRz7Q2IviSl0+9dRhP9yi/PmkKVKjj4vZDs1ufkN47twBFLZmiw37YFtTqBrxKAI7dlOrg==}
+    engines: {node: '>=16.0.0'}
+
+  '@hpke/hybridkem-x-wing@0.7.1':
+    resolution: {integrity: sha512-8BdZnfIagg8MFuShruSbVuj7/ujg63eNaRx/EE8dJzMg1keh2Vm8BPAigEu5Zzskgu9zv001yHYdV7PK8K0+aA==}
+    engines: {node: '>=16.0.0'}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -473,6 +534,10 @@ packages:
 
   '@noble/hashes@2.4.0':
     resolution: {integrity: sha512-X5XaVWZIBCT7HHZGm5I7ZQXDwLG+bGXuSrMQAW+7Zvl87h1kmc1ZB1VSRJcpUfoUrGQp4Fkoxm5kZ+Ms+aW+eA==}
+    engines: {node: '>= 20.19.0'}
+
+  '@noble/post-quantum@0.7.1':
+    resolution: {integrity: sha512-+P9981IiAnVh+rmcubozzVwrEy3XsN/tMhTnvsjV9VDaYpOnNCqWqKo2FLWxbu92YHfjGIlE5XnW175UK+ln+Q==}
     engines: {node: '>= 20.19.0'}
 
   '@oxc-project/types@0.151.0':
@@ -1236,6 +1301,10 @@ packages:
   magic-string@1.4.2:
     resolution: {integrity: sha512-vG+rjFRj1PqdIBozIxAGMjPlOhaVe+GXpbttY/iSK7rGcJRMlwNJO7dcUwmUqkymsFLJiNGI06t4D7Fr7yRC9g==}
 
+  mlkem@2.7.0:
+    resolution: {integrity: sha512-I2bcB5d6jtkdan6MLGOxObpUbidqv0ej+PhbCGnXUqmcGYZ6X8F0qBpU6HE4mvYc81NSznBrVDp+Uc808Ba2RA==}
+    engines: {node: '>=16.0.0'}
+
   motion-dom@13.4.2:
     resolution: {integrity: sha512-mY293Iyj4rOQo5sDxUwPYLOKiveLQrJoK1tKfG8V1H3MMGMfan3s2i7NBW18WnD39DD79ogyiL/1fmy22GLG5w==}
 
@@ -1656,6 +1725,17 @@ snapshots:
       tslib: 2.8.1
     optional: true
 
+  '@hpke/common@1.13.0': {}
+
+  '@hpke/core@1.10.1':
+    dependencies:
+      '@hpke/common': 1.13.0
+
+  '@hpke/hybridkem-x-wing@0.7.1':
+    dependencies:
+      '@hpke/common': 1.13.0
+      mlkem: 2.7.0
+
   '@img/colour@1.1.0':
     optional: true
 
@@ -1823,6 +1903,12 @@ snapshots:
   '@noble/hashes@1.8.0': {}
 
   '@noble/hashes@2.4.0': {}
+
+  '@noble/post-quantum@0.7.1':
+    dependencies:
+      '@noble/ciphers': 2.4.0
+      '@noble/curves': 2.4.0
+      '@noble/hashes': 2.4.0
 
   '@oxc-project/types@0.151.0': {}
 
@@ -2395,6 +2481,8 @@ snapshots:
   magic-string@1.4.2:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
+
+  mlkem@2.7.0: {}
 
   motion-dom@13.4.2:
     dependencies:

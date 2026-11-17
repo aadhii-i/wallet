@@ -1,0 +1,14 @@
+# QD-Wallet contracts. Build: ~/.foundry/bin/forge build (artifacts are committed
+# under ../packages/qd-account/src/artifacts by `pnpm --filter @qd/qd-account gen`).
+[profile.default]
+src = "src"
+out = "out"
+test = "test"
+cache_path = "cache"
+solc_version = "0.8.28"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+# Reproducible bytecode: no metadata hash, so CREATE2 addresses depend only on source.
+bytecode_hash = "none"
+cbor_metadata = false

@@ -10,10 +10,19 @@ import { Sheet } from '../ui/sheet';
 import { Skeleton, Spinner } from '../ui/spinner';
 import { t } from '../ui/motion';
 
+/** Known asset, or for an unlisted token a base-unit placeholder (never mistaken for the native coin). */
 function assetOf(network: Network, assetId: string) {
   const all = assetsForNetwork(network);
-  return all.find((a) => a.id === assetId) ?? all[0]!;
+  const found = all.find((a) => a.id === assetId);
+  if (found) return found;
+  if (assetId === `${network.id}:native`) return all[0]!;
+  const contract = assetId.slice(assetId.indexOf(':') + 1);
+  return { ...all[0]!, id: assetId, symbol: `units of ${shortAddress(contract)}`, decimals: 0, kind: 'erc20' as const, verified: false };
 }
+
+/** Value received through a contract with no decodable transaction ("internal:<block>:<address>"). */
+const isInternal = (hash: string) => hash.startsWith('internal:');
+const itemKey = (i: ActivityItem) => `${i.hash}|${i.assetId}|${i.direction}`;
 
 function dayLabel(iso: string): string {
   const d = new Date(iso);
@@ -72,7 +81,7 @@ export function ActivityList({ items, loading, network, emptyHint = true }: { it
           <h3 className="py-2 text-xs font-semibold uppercase tracking-wide text-subtle">{day}</h3>
           <ul>
             {list.map((item) => (
-              <motion.li key={item.hash} layout initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={t.base}>
+              <motion.li key={itemKey(item)} layout initial={{ opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }} transition={t.base}>
                 <TxRow item={item} network={network} onClick={() => setSelected(item)} />
               </motion.li>
             ))}
@@ -168,13 +177,17 @@ export function TxDetailSheet({ item, network, onClose }: { item: ActivityItem |
             {item.fee && <Row label="Network fee">{formatDisplay(BigInt(item.fee), 18, 8)} {network.nativeCurrency.symbol}</Row>}
             <Row label="Date">{new Date(item.timestamp).toLocaleString()}</Row>
             <Row label="Transaction ID">
-              <span className="flex items-center gap-1">
-                <span className="font-mono text-[13px]">{shortAddress(item.hash, 10, 8)}</span>
-                <CopyButton value={item.hash} label="Copy transaction ID" toastText="Transaction ID copied" />
-              </span>
+              {isInternal(item.hash) ? (
+                <span className="text-[13px] text-muted">Internal transfer in block {item.blockNumber} (sent by a contract)</span>
+              ) : (
+                <span className="flex items-center gap-1">
+                  <span className="font-mono text-[13px]">{shortAddress(item.hash, 10, 8)}</span>
+                  <CopyButton value={item.hash} label="Copy transaction ID" toastText="Transaction ID copied" />
+                </span>
+              )}
             </Row>
           </dl>
-          {network.explorer && (
+          {network.explorer && !isInternal(item.hash) && (
             <a href={network.explorer.txUrl(item.hash)} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center gap-2 rounded-full py-2 text-sm font-semibold text-primary hover:underline">
               View on {network.explorer.name} <ExternalLink size={14} />
             </a>

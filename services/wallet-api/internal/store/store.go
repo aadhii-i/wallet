@@ -142,6 +142,8 @@ type Store interface {
 	SecurityEvents() SecurityEvents
 	AuditLogs() AuditLogs
 	Idempotency() Idempotency
+	SharedWallets() SharedWallets
+	ChainIndex() ChainIndex
 
 	// Close releases any underlying resources (DB pool, etc).
 	Close()

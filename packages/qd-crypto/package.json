@@ -4,9 +4,10 @@
   "private": true,
   "type": "module",
   "sideEffects": false,
-  "exports": { ".": "./src/index.ts" },
+  "exports": { ".": { "types": "./types/index.d.ts", "default": "./src/index.ts" } },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.types.json",
+    "types": "tsc -p tsconfig.types.json",
     "test": "vitest run --passWithNoTests",
     "bench": "vitest run --config vitest.bench.config.ts"
   },

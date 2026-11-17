@@ -1,6 +1,7 @@
 package transaction
 
 import (
+	"context"
 	"encoding/base64"
 	"net/http"
 	"sort"
@@ -25,6 +26,22 @@ type ActivityProviders interface {
 type ActivityHandlers struct {
 	store     store.Store
 	providers ActivityProviders
+	index     ActivityIndex
+	chainOf   func(networkID string) (int64, bool)
+}
+
+// ActivityIndex is the persistent chain index (internal/indexer): Sync
+// indexes the addresses now (best effort, never blocks on an index pass
+// already running); records are then read from the store.
+type ActivityIndex interface {
+	Sync(ctx context.Context, chainID int64, addresses []string, shared bool) error
+}
+
+// SetIndex makes Activity include transfers from the persistent chain index
+// (incoming ETH from shared accounts and other contracts, ERC-20 transfers),
+// found from blockchain data whether or not this device sent anything.
+func (h *ActivityHandlers) SetIndex(ix ActivityIndex, chainOf func(networkID string) (int64, bool)) {
+	h.index, h.chainOf = ix, chainOf
 }
 
 func NewActivityHandlers(st store.Store, providers ActivityProviders) *ActivityHandlers {
@@ -93,7 +110,20 @@ func (h *ActivityHandlers) GetActivity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	merged := trackedToMerged(tracked, addrStrings)
+	// Indexed chain transfers first: they come from mined receipts and win
+	// over this device's own tracking for the same transaction.
+	var merged []mergedItem
+	if h.index != nil && h.chainOf != nil && len(addrStrings) > 0 {
+		if chainID, ok := h.chainOf(networkID); ok {
+			ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
+			_ = h.index.Sync(ctx, chainID, addrStrings, false)
+			cancel()
+			if recs, err := h.store.ChainIndex().ListTransfers(r.Context(), chainID, addrStrings, 500); err == nil {
+				merged = append(merged, indexedToMerged(recs, networkID, addrStrings)...)
+			}
+		}
+	}
+	merged = append(merged, trackedToMerged(tracked, addrStrings)...)
 
 	if h.providers != nil {
 		if provider := h.providers.ProviderFor(networkID); provider != nil {
@@ -136,6 +166,9 @@ func (h *ActivityHandlers) GetActivity(w http.ResponseWriter, r *http.Request) {
 			"timestamp":   item.Timestamp.UTC().Format(time.RFC3339),
 			"flags":       flagsForResponse(item.Flags),
 		})
+		if item.Fee != "" {
+			out[len(out)-1]["fee"] = item.Fee
+		}
 	}
 	resp := map[string]any{"items": out}
 	if nextCursor != "" {
@@ -212,11 +245,53 @@ func sentToSet(items []mergedItem) map[string]struct{} {
 	return out
 }
 
+// indexedToMerged turns chain-index records into activity items from the
+// point of view of the given addresses.
+func indexedToMerged(recs []*store.ChainTransfer, networkID string, addresses []string) []mergedItem {
+	mine := map[string]bool{}
+	for _, a := range addresses {
+		mine[strings.ToLower(a)] = true
+	}
+	out := make([]mergedItem, 0, len(recs))
+	for _, r := range recs {
+		fromMe, toMe := mine[r.From], mine[r.To]
+		if !fromMe && !toMe {
+			continue
+		}
+		direction := "in"
+		switch {
+		case fromMe && toMe:
+			direction = "self"
+		case fromMe:
+			direction = "out"
+		}
+		asset := networkID + ":native"
+		if r.Token != "" {
+			asset = networkID + ":" + r.Token
+		}
+		status := string(store.TxConfirmed)
+		if !r.Success {
+			status = string(store.TxFailed)
+		}
+		fee := ""
+		if mine[r.TxFrom] && r.LogIndex == store.LogIndexTx {
+			fee = r.FeeWei
+		}
+		out = append(out, mergedItem{
+			Hash: r.TxHash, NetworkID: networkID, Direction: direction, From: r.From, To: r.To, AssetID: asset, Amount: r.Amount,
+			Fee: fee, Status: status, BlockNumber: int64(r.BlockNumber), Timestamp: r.BlockTime,
+		})
+	}
+	return out
+}
+
+// dedupeByHash keeps the first item per (network, transaction, asset): one
+// transaction can move several assets for the same address.
 func dedupeByHash(items []mergedItem) []mergedItem {
 	seen := map[string]struct{}{}
 	out := make([]mergedItem, 0, len(items))
 	for _, item := range items {
-		key := item.NetworkID + "|" + strings.ToLower(item.Hash)
+		key := item.NetworkID + "|" + strings.ToLower(item.Hash) + "|" + strings.ToLower(item.AssetID)
 		if _, ok := seen[key]; ok {
 			continue
 		}

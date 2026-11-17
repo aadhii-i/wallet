@@ -7,3 +7,4 @@ export * from './signer/confirmation';
 export * from './signer/keyring';
 export * from './signer/hd-signer';
 export * from './accounts';
+export * from './qd-shares';

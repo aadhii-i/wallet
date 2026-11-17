@@ -1,0 +1,14 @@
+{
+  // Emits declarations so packages with stricter compiler options (e.g.
+  // noUncheckedIndexedAccess) type-check against qd-crypto's API rather than
+  // re-checking its source. Output is generated and git-ignored.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "src",
+    "outDir": "types"
+  },
+  "include": ["src"]
+}

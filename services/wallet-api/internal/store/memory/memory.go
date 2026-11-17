@@ -20,10 +20,12 @@ type Store struct {
 	secEvents     *securityEventStore
 	audit         *auditStore
 	idem          *idempotencyStore
+	shared        *sharedStore
+	chainIndex    *chainIndexStore
 }
 
 func New() *Store {
-	return &Store{
+	s := &Store{
 		users:         &userStore{data: map[string]*store.User{}},
 		devices:       &deviceStore{data: map[string]*store.Device{}},
 		challenges:    &challengeStore{data: map[string]*store.Challenge{}},
@@ -36,7 +38,10 @@ func New() *Store {
 		secEvents:     &securityEventStore{data: map[string]*store.SecurityEvent{}},
 		audit:         &auditStore{},
 		idem:          &idempotencyStore{data: map[string]*store.IdempotencyRecord{}},
+		shared:        newSharedStore(),
 	}
+	s.chainIndex = newChainIndexStore(s)
+	return s
 }
 
 func (s *Store) Users() store.Users                   { return s.users }
@@ -51,6 +56,8 @@ func (s *Store) Transactions() store.Transactions     { return s.txs }
 func (s *Store) SecurityEvents() store.SecurityEvents { return s.secEvents }
 func (s *Store) AuditLogs() store.AuditLogs           { return s.audit }
 func (s *Store) Idempotency() store.Idempotency       { return s.idem }
+func (s *Store) SharedWallets() store.SharedWallets   { return s.shared }
+func (s *Store) ChainIndex() store.ChainIndex         { return s.chainIndex }
 func (s *Store) Close()                               {}
 
 var _ store.Store = (*Store)(nil)

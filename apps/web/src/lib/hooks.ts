@@ -135,6 +135,8 @@ export function useActivity(account: AccountMeta | undefined) {
     queryKey: ['activity', network.id, account?.apiId],
     enabled: !!account?.apiId && apiOnline,
     refetchInterval: 20_000,
+    // Returning to the app re-syncs: the API indexes this account's addresses from the chain on each request.
+    refetchOnWindowFocus: 'always',
     retry: 1,
     queryFn: async () => (await (await getApi()).activity(account!.apiId!, network.id)).items,
   });
@@ -158,10 +160,11 @@ export function useActivity(account: AccountMeta | undefined) {
         flags: [],
       }));
     const byHash = new Map<string, ActivityItem>();
-    for (const i of local) byHash.set(i.hash.toLowerCase(), i);
+    const key = (i: ActivityItem) => `${i.hash.toLowerCase()}|${i.assetId}`;
+    for (const i of local) byHash.set(key(i), i);
     // Remote wins for status once indexed, but keep local-only pending items.
     // flags is defaulted here because the list dereferences it unconditionally.
-    for (const i of remote.data ?? []) byHash.set(i.hash.toLowerCase(), { ...i, flags: i.flags ?? [] });
+    for (const i of remote.data ?? []) byHash.set(key(i), { ...i, flags: i.flags ?? [] });
     return [...byHash.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
   }, [account, localTxs, network.id, remote.data]);
 

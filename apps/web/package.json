@@ -5,15 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && node scripts/csp.mjs",
+    "build": "pnpm --dir ../../packages/qd-crypto run types && next build && node scripts/csp.mjs",
     "start": "node scripts/serve-static.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "pnpm --dir ../../packages/qd-crypto run types && tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "e2e": "playwright test"
   },
   "dependencies": {
     "@qd/blockchain": "workspace:*",
     "@qd/evm": "workspace:*",
+    "@qd/qd-account": "workspace:*",
+    "@qd/qd-crypto": "workspace:*",
     "@qd/rpc": "workspace:*",
     "@qd/shared-types": "workspace:*",
     "@qd/transaction": "workspace:*",

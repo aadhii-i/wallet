@@ -54,8 +54,16 @@ type Config struct {
 	MetricsAddr    string
 	AllowedOrigins []string
 
-	Store          StoreKind
-	DatabaseURL    string
+	// DevCredentialBurst, when > 0, raises the per-IP bursts for
+	// the unauthenticated /v1/auth/* routes so local multi-user testing can
+	// register many independent devices from one machine. Refused in production.
+	DevCredentialBurst int
+
+	Store       StoreKind
+	DatabaseURL string
+	// StoreSnapshot (STORE_SNAPSHOT) persists the development in-memory store
+	// to this file, so API restarts keep wallets, proposals and executions.
+	StoreSnapshot  string
 	MigrateOnStart bool
 
 	RedisURL string
@@ -75,7 +83,16 @@ type Config struct {
 
 	EVMRPC              map[int64][]RPCUpstream
 	EnableLocalNetworks bool
-	HistoryProvider     map[int64]HistoryProviderKind
+	// RelayerKeys (RELAYER_PRIVATE_KEY_<chainId>, hex secp256k1) pay gas to
+	// submit Raccoon-signed shared-wallet calls to QdAccount contracts. A
+	// relayer key cannot move shared funds. Refused in production while the
+	// on-chain Raccoon verifier is research-grade (ADR 0019).
+	RelayerKeys map[int64]string
+	// GasLowBalanceWei (GAS_LOW_BALANCE_WEI_<chainId>, decimal wei) overrides
+	// when a chain's gas service account is reported as low. Unset: enough to
+	// set up one more wallet key and execute once at current gas prices.
+	GasLowBalanceWei map[int64]string
+	HistoryProvider  map[int64]HistoryProviderKind
 
 	PriceProvider   PriceProviderKind
 	CoingeckoAPIKey string
@@ -88,6 +105,18 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getint(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
 
 func getbool(key string, def bool) bool {
@@ -110,8 +139,10 @@ func Load() (*Config, error) {
 		HTTPAddr:            getenv("HTTP_ADDR", ":8080"),
 		MetricsAddr:         getenv("METRICS_ADDR", ":9090"),
 		Store:               StoreKind(getenv("STORE", string(StoreMemory))),
+		StoreSnapshot:       os.Getenv("STORE_SNAPSHOT"),
 		DatabaseURL:         getenv("DATABASE_URL", ""),
 		MigrateOnStart:      getbool("MIGRATE_ON_START", false),
+		DevCredentialBurst:  getint("DEV_CREDENTIAL_RATE_BURST", 0),
 		RedisURL:            getenv("REDIS_URL", ""),
 		CookieSecure:        getbool("COOKIE_SECURE", true),
 		DevKeyDir:           getenv("DEV_KEY_DIR", "./.dev-keys"),
@@ -150,6 +181,8 @@ func Load() (*Config, error) {
 
 	cfg.EVMRPC = map[int64][]RPCUpstream{}
 	cfg.HistoryProvider = map[int64]HistoryProviderKind{}
+	cfg.RelayerKeys = map[int64]string{}
+	cfg.GasLowBalanceWei = map[int64]string{}
 
 	// Well-known chain ids we look for EVM_RPC_<chainId> on.
 	knownChains := []int64{1, 11155111, 8453, 42161, 137, 31337}
@@ -159,6 +192,16 @@ func Load() (*Config, error) {
 			continue
 		}
 		key, val := parts[0], parts[1]
+		if strings.HasPrefix(key, "RELAYER_PRIVATE_KEY_") {
+			if chainID, err := strconv.ParseInt(strings.TrimPrefix(key, "RELAYER_PRIVATE_KEY_"), 10, 64); err == nil && val != "" {
+				cfg.RelayerKeys[chainID] = val
+			}
+		}
+		if strings.HasPrefix(key, "GAS_LOW_BALANCE_WEI_") {
+			if chainID, err := strconv.ParseInt(strings.TrimPrefix(key, "GAS_LOW_BALANCE_WEI_"), 10, 64); err == nil && val != "" {
+				cfg.GasLowBalanceWei[chainID] = val
+			}
+		}
 		if strings.HasPrefix(key, "EVM_RPC_") {
 			idStr := strings.TrimPrefix(key, "EVM_RPC_")
 			chainID, err := strconv.ParseInt(idStr, 10, 64)
@@ -234,6 +277,12 @@ func (c *Config) Validate() error {
 		}
 		if !c.CookieSecure {
 			errs = append(errs, "COOKIE_SECURE=false is refused in production")
+		}
+		if c.DevCredentialBurst != 0 {
+			errs = append(errs, "DEV_CREDENTIAL_RATE_BURST is a development-only setting and is refused in production")
+		}
+		if len(c.RelayerKeys) != 0 {
+			errs = append(errs, "RELAYER_PRIVATE_KEY_* is refused in production (research-grade on-chain Raccoon verifier)")
 		}
 	}
 	if len(errs) > 0 {

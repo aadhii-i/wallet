@@ -12,6 +12,7 @@ import { vault } from '@/lib/vault-client';
 import { Button } from '@/components/ui/button';
 import { Sheet } from '@/components/ui/sheet';
 import { NetworkDot } from '@/components/wallet/network-sheet';
+import { GasServiceSection } from '@/features/gas-service/gas-service-account';
 
 const LOCK_OPTIONS = [1, 5, 15, 30, 60];
 
@@ -77,6 +78,15 @@ export default function SettingsPage() {
           </button>
         ))}
       </Group>
+
+      <div id="gas-service" className="scroll-mt-20">
+      <Group
+        title="Network & Gas"
+        hint="Shared-wallet transactions are submitted by QD Wallet’s gas service account, which pays the network fees. The shared smart account pays the transfer amounts."
+      >
+        <GasServiceSection />
+      </Group>
+      </div>
 
       <Group title="About">
         <Row icon={<Server size={18} />} label="Version" value="0.1.0 (V1 preview)" />

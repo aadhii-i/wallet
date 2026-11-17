@@ -7,14 +7,19 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +30,7 @@ import (
 	"github.com/qdwallet/wallet-api/internal/account"
 	"github.com/qdwallet/wallet-api/internal/auth"
 	"github.com/qdwallet/wallet-api/internal/blockchain/evm"
+	"github.com/qdwallet/wallet-api/internal/indexer"
 	"github.com/qdwallet/wallet-api/internal/platform/config"
 	"github.com/qdwallet/wallet-api/internal/platform/db"
 	"github.com/qdwallet/wallet-api/internal/platform/httpx"
@@ -33,6 +39,7 @@ import (
 	"github.com/qdwallet/wallet-api/internal/prices"
 	"github.com/qdwallet/wallet-api/internal/rpc"
 	"github.com/qdwallet/wallet-api/internal/security"
+	"github.com/qdwallet/wallet-api/internal/sharedwallet"
 	"github.com/qdwallet/wallet-api/internal/store"
 	"github.com/qdwallet/wallet-api/internal/store/memory"
 	"github.com/qdwallet/wallet-api/internal/store/postgres"
@@ -82,10 +89,21 @@ func run() error {
 	// --- Store ---------------------------------------------------------------
 	var st store.Store
 	var pgPool *pgxpool.Pool
+	var memStore *memory.Store
 	switch cfg.Store {
 	case config.StoreMemory:
-		st = memory.New()
+		memStore = memory.New()
+		st = memStore
 		logger.Info("using in-memory store (not for production)")
+		if cfg.StoreSnapshot != "" {
+			loaded, err := memStore.Load(cfg.StoreSnapshot)
+			if err != nil {
+				return fmt.Errorf("STORE_SNAPSHOT: %w", err)
+			}
+			logger.Info("in-memory store persisted to a snapshot file", "path", cfg.StoreSnapshot, "restored", loaded)
+		} else {
+			logger.Warn("in-memory store without STORE_SNAPSHOT: a restart loses all wallets, proposals and executions")
+		}
 	case config.StorePostgres:
 		if cfg.MigrateOnStart {
 			if err := db.Migrate(cfg.DatabaseURL); err != nil {
@@ -176,8 +194,88 @@ func run() error {
 	cookies := auth.CookieNames{Access: cfg.AccessCookieName(), Refresh: cfg.RefreshCookieName()}
 	authHandlers := auth.NewHandlers(authSvc, cfg.AllowedOrigins, cfg.CookieSecure, cookies, csrfKey, ipHashKey, cfg.TrustedProxies)
 	acctHandlers := account.NewHandlers(acctSvc, st)
+	sharedHandlers := sharedwallet.NewHandlers(sharedwallet.NewService(st))
+
+	// --- Shared-wallet relayer: submits verified Raccoon signatures to QdAccount.
+	relayerKeys, err := sharedwallet.ParseRelayerKeys(cfg.RelayerKeys)
+	if err != nil {
+		return err
+	}
+	relayer := sharedwallet.NewRelayer(st, func(chainID int64) (sharedwallet.ChainCaller, bool) {
+		p, ok := pools[chainID]
+		return p, ok
+	}, relayerKeys, logger)
+	for chainID := range pools {
+		relayer.ChainIDs = append(relayer.ChainIDs, chainID)
+	}
+	for chainID := range relayerKeys {
+		addr, _ := relayer.RelayerAddress(chainID)
+		logger.Warn("shared-wallet relayer enabled (development)", "chain", chainID, "relayer", addr.Hex())
+	}
+	for chainID := range pools {
+		if _, ok := relayerKeys[chainID]; !ok && chainID != 1 {
+			logger.Info("shared-wallet execution disabled for chain: no relayer key", "chain", chainID, "env", fmt.Sprintf("RELAYER_PRIVATE_KEY_%d", chainID))
+		}
+	}
+	// Startup diagnostics: RPC chain id, relayer balance and contract status per chain (no secrets).
+	go func() {
+		ctx, cancel := context.WithTimeout(healthCtx, 20*time.Second)
+		defer cancel()
+		for _, cs := range relayer.Status(ctx) {
+			if !cs.RelayerConfigured {
+				continue
+			}
+			logger.Info("shared-wallet relayer status", "chain", cs.ChainID, "relayer", cs.RelayerAddress, "rpcOk", cs.RPCOK,
+				"balanceWei", cs.RelayerBalanceWei, "verifierDeployed", boolp(cs.VerifierDeployed), "factoryDeployed", boolp(cs.FactoryDeployed),
+				"ready", cs.Ready, "problems", strings.Join(cs.Problems, "; "))
+		}
+	}()
+	for chainID, v := range cfg.GasLowBalanceWei {
+		n, ok := new(big.Int).SetString(strings.TrimSpace(v), 10)
+		if !ok || n.Sign() < 0 {
+			return fmt.Errorf("GAS_LOW_BALANCE_WEI_%d must be a non-negative decimal amount of wei", chainID)
+		}
+		relayer.LowBalanceWei[chainID] = n
+	}
+	sharedHandlers.SetRelayer(relayer)
+	go relayer.Run(healthCtx)
+	// Gas service account history (receipts of relayer payments, recharges): read-only.
+	go sharedwallet.NewGasMonitor(relayer).Run(healthCtx)
+	relayerStatus := newRelayerStatusHandler(relayer)
+	snapshotDone := make(chan struct{})
+	if memStore != nil && cfg.StoreSnapshot != "" {
+		go func() {
+			defer close(snapshotDone)
+			memStore.RunSnapshots(healthCtx, cfg.StoreSnapshot, 2*time.Second, logger)
+		}()
+	} else {
+		close(snapshotDone)
+	}
 	txHandlers := transaction.NewHandlers(txSvc, st)
 	activityHandlers := transaction.NewActivityHandlers(st, providerRegistry(historyByNetwork))
+	// Chain index: persistent personal Activity and shared Wallet History from receipts (read-only).
+	chainIndex := indexer.New(st, func(chainID int64) (indexer.Caller, bool) {
+		p, ok := pools[chainID]
+		return p, ok
+	}, logger)
+	for chainID := range pools {
+		chainIndex.ChainIDs = append(chainIndex.ChainIDs, chainID)
+	}
+	go chainIndex.Run(healthCtx)
+	activityHandlers.SetIndex(chainIndex, func(networkID string) (int64, bool) {
+		n, ok := registry.ByID(networkID)
+		if !ok {
+			return 0, false
+		}
+		return n.ChainID, true
+	})
+	sharedHandlers.SetIndex(chainIndex, func(chainID int64) (*sharedwallet.HistoryNetwork, bool) {
+		n, ok := registry.ByChainID(chainID)
+		if !ok || !n.Enabled {
+			return nil, false
+		}
+		return &sharedwallet.HistoryNetwork{Name: n.Name, ExplorerTxURL: n.ExplorerTxURL}, true
+	}, indexer.Sanitize)
 	evmHandlers := evm.NewHandlers(registry)
 	rpcHandler := rpc.NewHandler(rpcManager)
 	priceHandlers := prices.NewHandlers(priceProvider)
@@ -189,6 +287,13 @@ func run() error {
 	// (challenge/register): 10/min per IP, on top of the broader unauthRateLimit
 	// shared by challenge/register/login/refresh.
 	credentialRateLimit := security.NewKeyedTokenBucket(10.0/60.0, 10)
+	if cfg.DevCredentialBurst > 0 && cfg.AppEnv != config.EnvProduction {
+		// Development only (Validate refuses it in production): lets local
+		// multi-user tests register many independent devices from one IP.
+		credentialRateLimit = security.NewKeyedTokenBucket(float64(cfg.DevCredentialBurst)/60.0, cfg.DevCredentialBurst)
+		unauthRateLimit = security.NewKeyedTokenBucket(float64(cfg.DevCredentialBurst), cfg.DevCredentialBurst)
+		logger.Warn("development credential rate limit override active", "burst", cfg.DevCredentialBurst)
+	}
 
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID)
@@ -204,6 +309,9 @@ func run() error {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/v1/networks", evmHandlers.ListNetworks)
+	// Relayer diagnostics: chain id, RPC reachability, relayer address and
+	// balance, contract deployment. Public data only; never key material.
+	r.Get("/v1/relayers", relayerStatus)
 	r.Get("/v1/prices", priceHandlers.GetPrices)
 
 	r.Group(func(r chi.Router) {
@@ -241,6 +349,9 @@ func run() error {
 
 		r.Get("/v1/security/events", secHandlers.ListEvents)
 		r.Post("/v1/security/client-events", secHandlers.ReportClientEvent)
+
+		// Shared wallets: participants, proposals and signed approvals.
+		sharedHandlers.Routes(r)
 
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RateLimitBySession(sessionRateLimit))
@@ -281,6 +392,7 @@ func run() error {
 	_ = metricsServer.Shutdown(shutdownCtx)
 	trackerCancel()
 	healthCancel()
+	<-snapshotDone // final snapshot after the servers stopped accepting requests
 
 	return nil
 }
@@ -362,4 +474,41 @@ func (c *chainClient) poolForNetwork(networkID string) (*rpc.Pool, bool) {
 	}
 	pool, ok := c.pools[network.ChainID]
 	return pool, ok
+}
+
+func boolp(b *bool) string {
+	if b == nil {
+		return "unknown"
+	}
+	return strconv.FormatBool(*b)
+}
+
+// newRelayerStatusHandler serves relayer diagnostics, cached for 10 s so the
+// public endpoint cannot be used to hammer upstream RPC providers.
+func newRelayerStatusHandler(rel *sharedwallet.Relayer) http.HandlerFunc {
+	var mu sync.Mutex
+	var cached []byte
+	var at time.Time
+	return func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		// ?refresh=1 (the UI's "Refresh balance") bypasses the cache, at most every 3 s.
+		maxAge := 10 * time.Second
+		if r.URL.Query().Get("refresh") == "1" {
+			maxAge = 3 * time.Second
+		}
+		if cached == nil || time.Since(at) > maxAge {
+			ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+			b, err := json.Marshal(map[string]any{"chains": rel.Status(ctx)})
+			cancel()
+			if err != nil {
+				http.Error(w, "status unavailable", http.StatusInternalServerError)
+				return
+			}
+			cached, at = b, time.Now()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(cached)
+	}
 }

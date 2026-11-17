@@ -5,6 +5,14 @@
  * receives addresses, confirmation tokens and signatures — never keys.
  */
 import {
+  QdShareStore,
+  ShareProvisioningError,
+  dealShares,
+  fromBase64Url,
+  generateRecipientKeyPair,
+  openShareEnvelope,
+  toBase64Url,
+  wipe,
   HDKeyring,
   HDSigner,
   ConfirmationRegistry,
@@ -21,13 +29,42 @@ import {
   type EncryptedVault,
   type VaultContents,
 } from '@qd/wallet-core';
+import {
+  QdParty,
+  SigningError,
+  decodeKeyShare,
+  decodeRound1,
+  decodeRound2,
+  decodeSignature,
+  encodePublicKey,
+  encodeRound1,
+  encodeRound2,
+  encodeRound3,
+  publicKeyHash,
+  verify as raccoonVerify,
+} from '@qd/qd-crypto';
 import { openKv } from './idb';
 import type { VaultOps, VaultOp, VaultRequestMsg, VaultResponseMsg, VaultStatus } from './vault-protocol';
 
 declare const self: DedicatedWorkerGlobalScope;
 
 const kv = openKv('qd-vault');
+/**
+ * This device's own shared-wallet key shares and per-ceremony receiving keys,
+ * AES-256-GCM under an Argon2id key from the wallet password with a separate
+ * salt. Never holds another participant's share.
+ */
+const sharesKv = openKv('qd-shares');
+const shareStore = new QdShareStore(sharesKv);
 const MAX_FREE_ATTEMPTS = 5;
+/** Session ids this device has ever started round 1 for (public values; reuse would cancel the PRF masks). */
+const USED_SIDS_KEY = 'qdUsedSids';
+/**
+ * In-flight signing parties, in worker memory only (round state r_j must
+ * never be persisted or reused). A reload loses them: the session then fails
+ * with signer_state_lost and is retried with a new sid.
+ */
+const signingParties = new Map<string, { party: QdParty; sid: Uint8Array; act: number[]; walletId: string }>();
 const ADDRESS_PROOF_RE = /^QDWallet-Address\|v1\|[0-9a-f-]{36}\|(0x[0-9a-f]{40})\|[0-9a-f-]{36}$/;
 
 let keyring: HDKeyring | null = null;
@@ -60,6 +97,15 @@ async function lockedUntil(): Promise<number> {
   return last + delay;
 }
 
+/** Unlock the share store too, but only if one exists (avoids a second Argon2id run otherwise). */
+async function unlockSharesIfPresent(password: string): Promise<void> {
+  try {
+    if (await shareStore.exists()) await shareStore.unlock(password);
+  } catch {
+    // Never block the wallet itself; QD operations will ask to unlock the share store.
+  }
+}
+
 async function adopt(contents: VaultContents): Promise<string> {
   lock();
   keyring = await HDKeyring.fromMnemonic(contents.mnemonic);
@@ -73,6 +119,8 @@ async function adopt(contents: VaultContents): Promise<string> {
 function lock(): void {
   keyring?.lock();
   signer?.confirmations.revokeAll();
+  shareStore.lock();
+  signingParties.clear(); // in-flight parties hold decoded share material
   keyring = null;
   signer = null;
   pendingBackupPhrase = null;
@@ -87,6 +135,10 @@ function touch(): void {
       post({ event: 'locked' });
     }, autoLockMs);
   }
+}
+
+function requireShareStore(): void {
+  if (!shareStore.unlocked) throw new OpError('SHARE_STORE_LOCKED', 'Enter your password to unlock key-share storage');
 }
 
 function requireUnlocked(): { keyring: HDKeyring; signer: HDSigner } {
@@ -164,6 +216,7 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
 
   async unlock({ password }) {
     await adopt(await verifyAgainstVault(password));
+    await unlockSharesIfPresent(password);
     return { ok: true as const };
   },
 
@@ -218,6 +271,10 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
       throw e;
     }
     await kv.set('vault', await encryptVault(contents, newPassword));
+    if (await shareStore.exists()) {
+      await shareStore.unlock(oldPassword);
+      await shareStore.rekey(newPassword);
+    }
   },
 
   async issueConfirmation({ payload }) {
@@ -256,8 +313,184 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
     lock();
     backedUp = false;
     await kv.clear();
+    await sharesKv.clear();
+  },
+
+  // ---- shared-wallet QD key generation (trusted dealer; see wallet-core qd-shares) ----
+
+  async qdShareUnlock({ password }) {
+    requireUnlocked();
+    await verifyAgainstVault(password); // same password as the vault, checked against it first
+    await shareStore.unlock(password);
+    touch();
+  },
+
+  async qdShareStatus({ walletId }) {
+    const info = await shareStore.shareInfo(walletId);
+    return {
+      storeExists: await shareStore.exists(),
+      storeUnlocked: shareStore.unlocked,
+      share: info
+        ? {
+            keygenId: info.keygenId, participantId: info.participantId, partyIndex: info.partyIndex, threshold: info.threshold,
+            parties: info.parties, membershipVersion: info.membershipVersion, fingerprint: info.fingerprint, storedAt: info.storedAt,
+          }
+        : null,
+    };
+  },
+
+  /** Fresh X-Wing key pair for one ceremony; the private key is stored encrypted and never leaves the worker. */
+  async qdPrepareKeygen({ walletId, keygenId, participantId }) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    const existing = await shareStore.recipientKeyInfo(keygenId);
+    if (existing) return { publicKey: existing.publicKey };
+    const kp = await generateRecipientKeyPair();
+    try {
+      const publicKey = toBase64Url(kp.publicKey);
+      await shareStore.putRecipientKey({ walletId, keygenId, participantId, publicKey }, kp.privateKey);
+      return { publicKey };
+    } finally {
+      wipe(kp.privateKey);
+    }
+  },
+
+  /**
+   * Trusted dealer: generates the master key and every share inside this one
+   * call, self-checks them, seals each to its recipient and returns only
+   * ciphertexts and the public fingerprint. Nothing secret is persisted.
+   */
+  async qdDeal(req) {
+    requireUnlocked();
+    touch();
+    const out = await dealShares({
+      walletId: req.walletId, keygenId: req.keygenId, threshold: req.threshold, parties: req.parties, membershipVersion: req.membershipVersion,
+      recipients: req.recipients.map((r) => ({ participantId: r.participantId, partyIndex: r.partyIndex, publicKey: fromBase64Url(r.publicKey) })),
+    });
+    return {
+      fingerprint: out.fingerprint,
+      envelopes: out.envelopes.map((e) => ({ participantId: e.participantId, partyIndex: e.partyIndex, enc: toBase64Url(e.enc), ct: toBase64Url(e.ct) })),
+    };
+  },
+
+  /** Opens this device's envelope, verifies the share against the promised context, stores it encrypted. */
+  async qdAcceptShare(req) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    const { enc, ct, ...context } = req;
+    const sk = await shareStore.recipientPrivateKey(req.keygenId);
+    let share: Uint8Array | undefined;
+    try {
+      share = await openShareEnvelope(sk, context, { enc: fromBase64Url(enc), ct: fromBase64Url(ct) });
+      await shareStore.putShare({ ...context, storedAt: new Date().toISOString() }, share);
+    } finally {
+      wipe(sk, share);
+    }
+    await shareStore.deleteRecipientKey(req.keygenId);
+    return { fingerprint: req.fingerprint, partyIndex: req.partyIndex };
+  },
+
+  // ---- shared-wallet networked signing (QD-Wallet Alg. 4) ----
+
+  /** pk_j for an account: derived from this device's share (RandPK); public. */
+  async qdAccountKey({ walletId, derivationIndex }) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    const info = await shareStore.shareInfo(walletId);
+    if (!info) throw new OpError('NO_SHARE', 'This device holds no key share for this wallet');
+    const bytes = await shareStore.shareBytes(walletId);
+    try {
+      const pk = new QdParty(decodeKeyShare(bytes)).publicKey(derivationIndex);
+      return { publicKey: toBase64Url(encodePublicKey(pk)), publicKeyHash: toHex(publicKeyHash(pk)), keygenId: info.keygenId, partyIndex: info.partyIndex };
+    } finally {
+      wipe(bytes);
+    }
+  },
+
+  async qdSignRound(req) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    const bad = (m: string) => new OpError('SIGNING_REFUSED', m);
+    if (!/^[0-9a-f]{64}$/.test(req.sid) || !/^0x[0-9a-f]{64}$/i.test(req.message) || !/^0x[0-9a-f]{64}$/i.test(req.publicKeyHash)) {
+      throw bad('Malformed signing request');
+    }
+    const sid = fromHexBytes(req.sid);
+    const msg = fromHexBytes(req.message.slice(2));
+    try {
+      if (req.round === 1) {
+        if (signingParties.has(req.sessionId)) throw bad('Round 1 already produced for this session');
+        const info = await shareStore.shareInfo(req.walletId);
+        if (!info || info.keygenId !== req.keygenId) throw new OpError('NO_SHARE', 'This device holds no share of this session’s key');
+        if (!req.act.includes(info.partyIndex)) throw bad('This device is not a selected signer');
+        const bytes = await shareStore.shareBytes(req.walletId);
+        let party: QdParty;
+        try {
+          party = new QdParty(decodeKeyShare(bytes));
+        } finally {
+          wipe(bytes);
+        }
+        // The session must be for the account key this share actually controls.
+        if (toHex(publicKeyHash(party.publicKey(req.derivationIndex))) !== req.publicKeyHash.toLowerCase()) {
+          throw bad('Session public key does not match this device’s account key');
+        }
+        const used = (await sharesKv.get<string[]>(USED_SIDS_KEY)) ?? [];
+        if (used.includes(req.sid)) throw bad('Session id already used on this device');
+        await sharesKv.set(USED_SIDS_KEY, [...used.slice(-999), req.sid]);
+        const r1 = party.round1({ sid, act: req.act, derivationIndex: req.derivationIndex, msg });
+        signingParties.set(req.sessionId, { party, sid, act: [...req.act], walletId: req.walletId });
+        return { payload: toBase64Url(encodeRound1(r1)) };
+      }
+      const st = signingParties.get(req.sessionId);
+      if (!st || st.walletId !== req.walletId || toHex(st.sid).slice(2) !== req.sid) {
+        throw new OpError('SIGNER_STATE_LOST', 'This device no longer holds the round state for this session');
+      }
+      if (req.inputs.length !== st.act.length) throw bad('Wrong number of round inputs');
+      const inputs = req.inputs.map(fromBase64Url);
+      if (req.round === 2) {
+        const r2 = st.party.round2(st.sid, inputs.map((b, k) => decodeRound1(st.act[k]!, b)));
+        return { payload: toBase64Url(encodeRound2(r2, st.act)) };
+      }
+      signingParties.delete(req.sessionId); // round 3 consumes r_j
+      const r3 = st.party.round3(st.sid, inputs.map((b, k) => decodeRound2(st.act[k]!, b, st.act)));
+      return { payload: toBase64Url(encodeRound3(r3)) };
+    } catch (e) {
+      if (e instanceof SigningError) {
+        signingParties.delete(req.sessionId);
+        throw new OpError('PROTOCOL_ABORT', e.message);
+      }
+      if (e instanceof OpError) throw e;
+      signingParties.delete(req.sessionId);
+      throw new OpError('PROTOCOL_ABORT', 'Malformed round message');
+    }
+  },
+
+  async qdForgetSession({ sessionId }) {
+    signingParties.delete(sessionId);
+  },
+
+  /** Independent check on this device: the coordinator's signature verifies under this device's own pk_j. */
+  async qdVerifySignature({ walletId, derivationIndex, message, signature }) {
+    requireUnlocked();
+    requireShareStore();
+    const bytes = await shareStore.shareBytes(walletId);
+    try {
+      const pk = new QdParty(decodeKeyShare(bytes)).publicKey(derivationIndex);
+      return raccoonVerify(pk, fromHexBytes(message.replace(/^0x/, '')), decodeSignature(fromBase64Url(signature)));
+    } catch {
+      return false;
+    } finally {
+      wipe(bytes);
+    }
   },
 };
+
+function fromHexBytes(hex: string): Uint8Array {
+  return Uint8Array.from(hex.match(/../g) ?? [], (h) => parseInt(h, 16));
+}
 
 function post(msg: VaultResponseMsg): void {
   self.postMessage(msg);
@@ -276,9 +509,10 @@ self.onmessage = async (ev: MessageEvent<VaultRequestMsg>) => {
     const result = await handler(args);
     post({ id, ok: true, result });
   } catch (e) {
-    const code = e instanceof OpError || e instanceof SignerError || e instanceof VaultError ? e.code : 'INTERNAL';
-    // Messages are fixed strings from our own code; never include inputs.
-    const message = e instanceof OpError || e instanceof SignerError || e instanceof VaultError ? e.message : 'Internal error';
+    const known = e instanceof OpError || e instanceof SignerError || e instanceof VaultError || e instanceof ShareProvisioningError;
+    const code = known ? e.code : 'INTERNAL';
+    // Messages are fixed strings from our own code; never include inputs or key material.
+    const message = known ? e.message : 'Internal error';
     post({ id, ok: false, error: { code, message } });
   }
 };

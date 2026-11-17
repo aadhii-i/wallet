@@ -31,7 +31,7 @@ const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   images: { unoptimized: true },
-  transpilePackages: ['@qd/blockchain', '@qd/evm', '@qd/rpc', '@qd/shared-types', '@qd/transaction', '@qd/ui', '@qd/wallet-core'],
+  transpilePackages: ['@qd/blockchain', '@qd/evm', '@qd/qd-account', '@qd/qd-crypto', '@qd/rpc', '@qd/shared-types', '@qd/transaction', '@qd/ui', '@qd/wallet-core'],
   ...(isDev
     ? {
         async headers() {

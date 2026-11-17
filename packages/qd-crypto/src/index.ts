@@ -2,6 +2,8 @@ export * from './params';
 export {
   challenge,
   encodePublicKey,
+  expandA,
+  expandACoefficients,
   publicKeyHash,
   signatureSqNorm,
   verify,

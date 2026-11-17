@@ -160,3 +160,20 @@ input:focus-visible,
 textarea:focus-visible {
   outline: none;
 }
+
+/* Print only the transaction receipt card ("Print receipt"). */
+@media print {
+  body.printing-receipt * {
+    visibility: hidden;
+  }
+  body.printing-receipt [data-receipt-print],
+  body.printing-receipt [data-receipt-print] * {
+    visibility: visible;
+  }
+  body.printing-receipt [data-receipt-print] {
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 100%;
+    border: none;
+  }
+}

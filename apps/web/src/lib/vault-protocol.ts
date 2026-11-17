@@ -17,6 +17,17 @@ export interface VaultOps {
   sign: { req: SigningRequest; res: SignatureResult };
   signAddressProof: { req: { index: number; message: string }; res: string };
   setAutoLock: { req: { minutes: number }; res: void };
+  // Shared-wallet QD key material. Results carry only public values.
+  qdShareUnlock: { req: { password: string }; res: void };
+  qdShareStatus: { req: { walletId: string }; res: QdShareStatus };
+  qdPrepareKeygen: { req: { walletId: string; keygenId: string; participantId: string }; res: { publicKey: string } };
+  qdDeal: { req: QdDealRequest; res: QdDealResult };
+  qdAcceptShare: { req: QdAcceptRequest; res: { fingerprint: string; partyIndex: number } };
+  // Networked Threshold Raccoon signing. Results are public protocol values.
+  qdAccountKey: { req: { walletId: string; derivationIndex: number }; res: QdAccountKey };
+  qdSignRound: { req: QdSignRoundRequest; res: { payload: string } };
+  qdForgetSession: { req: { sessionId: string }; res: void };
+  qdVerifySignature: { req: { walletId: string; derivationIndex: number; message: string; signature: string }; res: boolean };
   wipe: { req: void; res: void };
 }
 
@@ -40,3 +51,75 @@ export type VaultResponseMsg =
   | { id: number; ok: true; result: unknown }
   | { id: number; ok: false; error: { code: string; message: string } }
   | { event: 'locked' };
+
+/** Public metadata about the share this device holds for a wallet (never the share). */
+export interface QdShareStatus {
+  storeExists: boolean;
+  storeUnlocked: boolean;
+  share: {
+    keygenId: string;
+    participantId: string;
+    partyIndex: number;
+    threshold: number;
+    parties: number;
+    membershipVersion: number;
+    fingerprint: string;
+    storedAt: string;
+  } | null;
+}
+
+export interface QdDealRequest {
+  walletId: string;
+  keygenId: string;
+  threshold: number;
+  parties: number;
+  membershipVersion: number;
+  /** publicKey: base64url X-Wing public key registered by each participant's device. */
+  recipients: { participantId: string; partyIndex: number; publicKey: string }[];
+}
+
+/** Envelopes are HPKE ciphertexts (base64url); only their recipient can open them. */
+export interface QdDealResult {
+  fingerprint: string;
+  envelopes: { participantId: string; partyIndex: number; enc: string; ct: string }[];
+}
+
+export interface QdAcceptRequest {
+  walletId: string;
+  keygenId: string;
+  participantId: string;
+  partyIndex: number;
+  threshold: number;
+  parties: number;
+  membershipVersion: number;
+  fingerprint: string;
+  enc: string;
+  ct: string;
+}
+
+/** pk_j for a shared account, derived inside the worker from this device's share. */
+export interface QdAccountKey {
+  /** base64url, 5152 bytes: seedA ‖ t. Public. */
+  publicKey: string;
+  /** 0x keccak256("QD-VK-v1" ‖ pk) */
+  publicKeyHash: string;
+  keygenId: string;
+  partyIndex: number;
+}
+
+/**
+ * One signing round for this device's party. `inputs` are the previous
+ * round's payloads (base64url) in active-set order: none for round 1.
+ */
+export interface QdSignRoundRequest {
+  walletId: string;
+  keygenId: string;
+  sessionId: string;
+  sid: string; // 64 hex
+  act: number[];
+  derivationIndex: number;
+  message: string; // 0x + 64 hex
+  publicKeyHash: string; // 0x + 64 hex; must equal this device's own pk_j hash
+  round: 1 | 2 | 3;
+  inputs: string[];
+}

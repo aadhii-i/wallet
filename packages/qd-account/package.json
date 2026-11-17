@@ -1,0 +1,24 @@
+{
+  "name": "@qd/qd-account",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "gen": "cd ../../contracts && ~/.foundry/bin/forge build && cd ../packages/qd-account && node scripts/gen-artifacts.mjs",
+    "typecheck": "pnpm --dir ../qd-crypto run types && tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@qd/qd-crypto": "workspace:*",
+    "viem": "2.56.8"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vitest": "5.0.1",
+    "@types/node": "24.13.6"
+  }
+}
