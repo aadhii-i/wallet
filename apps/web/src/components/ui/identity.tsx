@@ -41,11 +41,14 @@ export function shortAddress(a: string, head = 6, tail = 4): string {
  * compare the whole thing (threats T10/T11).
  */
 export function ChunkedAddress({ address, className = '' }: { address: string; className?: string }) {
-  const body = address.slice(2);
+  // EVM addresses carry a 0x prefix we show dimmed; bech32 Bitcoin addresses
+  // are chunked whole, including their human-readable part.
+  const prefixed = address.startsWith('0x');
+  const body = prefixed ? address.slice(2) : address;
   const chunks = body.match(/.{1,4}/g) ?? [];
   return (
     <span className={`font-mono text-[13px] leading-6 tracking-tight ${className}`} aria-label={address}>
-      <span className="text-subtle">0x</span>
+      {prefixed && <span className="text-subtle">0x</span>}
       {chunks.map((c, i) => (
         <span key={i}>
           {/* Each 4-char group stays whole; lines only break between groups. */}

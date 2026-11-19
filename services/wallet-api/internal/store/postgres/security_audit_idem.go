@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/qdwallet/wallet-api/internal/audit"
 	"github.com/qdwallet/wallet-api/internal/store"
@@ -54,13 +56,17 @@ func (r *auditLogsRepo) Append(ctx context.Context, entry *store.AuditLog) error
 
 	var prevHash []byte
 	row := r.pool.QueryRow(ctx, `SELECT row_hash FROM audit_logs ORDER BY id DESC LIMIT 1`)
-	if err := row.Scan(&prevHash); err != nil {
-		prevHash = nil // no rows yet
+	if err := row.Scan(&prevHash); errors.Is(err, pgx.ErrNoRows) {
+		prevHash = []byte{}
+	} else if err != nil {
+		return err
 	}
 	entry.PrevHash = prevHash
 	if entry.CreatedAt.IsZero() {
 		entry.CreatedAt = time.Now().UTC()
 	}
+	// PostgreSQL stores timestamptz at microsecond precision.
+	entry.CreatedAt = entry.CreatedAt.UTC().Truncate(time.Microsecond)
 	hash, err := audit.RowHash(prevHash, entry)
 	if err != nil {
 		return err

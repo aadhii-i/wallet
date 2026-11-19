@@ -15,6 +15,19 @@ export function hashPayload(payload: SigningPayload): Hex {
     case 'evm-personal-message':
       canonical = `evm-personal-message|${payload.from.toLowerCase()}|${payload.message.toLowerCase()}`;
       break;
+    case 'btc-psbt':
+      canonical = `btc-psbt|${payload.network}|${payload.addressType}|${payload.from.toLowerCase()}|${payload.psbt}`;
+      break;
+    case 'hedera-transfer':
+      canonical = `hedera-transfer|${payload.fromAccountId}|${payload.toAccountId}|${payload.amountTinybars}|${payload.transactionBytes}`;
+      break;
+    case 'hedera-account-create':
+      canonical = `hedera-account-create|${payload.payerAccountId}|${payload.transactionBytes}|${payload.walletHdIndex}`;
+      break;
+    default: {
+      const exhaustive: never = payload;
+      throw new SignerError('INVALID_PAYLOAD', `Unsupported payload: ${JSON.stringify(exhaustive)}`);
+    }
   }
   return toHex(sha256(utf8ToBytes(canonical)));
 }

@@ -19,6 +19,8 @@ import {
   SignerError,
   VaultError,
   assertStrongPassword,
+  btcDerivationPath,
+  btcOwnershipProof,
   decryptVault,
   encryptVault,
   generateMnemonic,
@@ -29,6 +31,8 @@ import {
   type EncryptedVault,
   type VaultContents,
 } from '@qd/wallet-core';
+import { BitcoinSigner } from '@qd/bitcoin';
+import { Transaction, PrivateKey } from '@hashgraph/sdk';
 import {
   QdParty,
   SigningError,
@@ -66,9 +70,14 @@ const USED_SIDS_KEY = 'qdUsedSids';
  */
 const signingParties = new Map<string, { party: QdParty; sid: Uint8Array; act: number[]; walletId: string }>();
 const ADDRESS_PROOF_RE = /^QDWallet-Address\|v1\|[0-9a-f-]{36}\|(0x[0-9a-f]{40})\|[0-9a-f-]{36}$/;
+const BTC_PROOF_RE =
+  /^QDWallet-BTC\|v1\|[0-9a-f-]{36}\|(mainnet|testnet4)\|([a-z0-9]+)\|[0-9a-f-]{36}$/;
 
 let keyring: HDKeyring | null = null;
-let signer: HDSigner | null = null;
+/** One registry per unlock, shared by the EVM and Bitcoin signers. */
+let confirmations: ConfirmationRegistry | null = null;
+let hdSigner: HDSigner | null = null;
+let btcSigner: BitcoinSigner | null = null;
 let backedUp = false;
 /** Kept only between creation and completed backup verification. */
 let pendingBackupPhrase: string | null = null;
@@ -109,7 +118,9 @@ async function unlockSharesIfPresent(password: string): Promise<void> {
 async function adopt(contents: VaultContents): Promise<string> {
   lock();
   keyring = await HDKeyring.fromMnemonic(contents.mnemonic);
-  signer = new HDSigner(keyring, new ConfirmationRegistry());
+  confirmations = new ConfirmationRegistry();
+  hdSigner = new HDSigner(keyring, confirmations);
+  btcSigner = new BitcoinSigner(keyring, confirmations);
   backedUp = contents.backedUp || (await kv.get<boolean>('backedUp')) === true;
   pendingBackupPhrase = backedUp ? null : contents.mnemonic;
   touch();
@@ -118,11 +129,13 @@ async function adopt(contents: VaultContents): Promise<string> {
 
 function lock(): void {
   keyring?.lock();
-  signer?.confirmations.revokeAll();
+  confirmations?.revokeAll();
   shareStore.lock();
   signingParties.clear(); // in-flight parties hold decoded share material
   keyring = null;
-  signer = null;
+  confirmations = null;
+  hdSigner = null;
+  btcSigner = null;
   pendingBackupPhrase = null;
   clearTimeout(autoLockTimer);
 }
@@ -141,9 +154,16 @@ function requireShareStore(): void {
   if (!shareStore.unlocked) throw new OpError('SHARE_STORE_LOCKED', 'Enter your password to unlock key-share storage');
 }
 
-function requireUnlocked(): { keyring: HDKeyring; signer: HDSigner } {
-  if (!keyring || !signer) throw new OpError('LOCKED', 'Wallet is locked');
-  return { keyring, signer };
+function requireUnlocked(): {
+  keyring: HDKeyring;
+  confirmations: ConfirmationRegistry;
+  hdSigner: HDSigner;
+  btcSigner: BitcoinSigner;
+} {
+  if (!keyring || !confirmations || !hdSigner || !btcSigner) {
+    throw new OpError('LOCKED', 'Wallet is locked');
+  }
+  return { keyring, confirmations, hdSigner, btcSigner };
 }
 
 /** Serializes password checks so parallel attempts cannot bypass the failure counter. */
@@ -230,6 +250,27 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
     return indexes.map((i) => keyring.evmAddress(i));
   },
 
+  async btcAddress({ index, network, addressType }) {
+    const { keyring } = requireUnlocked();
+    touch();
+    return {
+      address: keyring.btcAddress(index, addressType, network),
+      path: btcDerivationPath(index, addressType, network),
+    };
+  },
+
+  /**
+   * The account-level public descriptor for Bitcoin address derivation.
+   * Public material only, but it reveals every address of this wallet on
+   * that network, so it is only sent to our own backend.
+   */
+  async btcDescriptor({ network, addressType }) {
+    const { keyring } = requireUnlocked();
+    touch();
+    const { descriptor, xpub, fingerprint } = keyring.btcDescriptor(addressType, network);
+    return { descriptor, xpub, fingerprint };
+  },
+
   async getBackupPhrase() {
     requireUnlocked();
     if (!pendingBackupPhrase) throw new OpError('ALREADY_BACKED_UP', 'Use “Reveal recovery phrase” in Security');
@@ -278,15 +319,75 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
   },
 
   async issueConfirmation({ payload }) {
-    const { signer } = requireUnlocked();
+    const { confirmations } = requireUnlocked();
     touch();
-    return signer.confirmations.issue(payload);
+    return confirmations.issue(payload);
   },
 
   async sign(request) {
-    const { signer } = requireUnlocked();
+    const { keyring, confirmations, hdSigner, btcSigner } = requireUnlocked();
     touch();
-    return signer.sign(request);
+
+    if (request.payload.kind === 'hedera-transfer') {
+      const { payload, confirmation, account } = request;
+      // Security guards
+      const ACCOUNT_RE = /^\d+\.\d+\.\d+$/;
+      if (!ACCOUNT_RE.test(payload.fromAccountId)) {
+        throw new OpError('INVALID_PAYLOAD', 'Invalid fromAccountId');
+      }
+      if (!ACCOUNT_RE.test(payload.toAccountId)) {
+        throw new OpError('INVALID_PAYLOAD', 'Invalid toAccountId');
+      }
+      if (payload.fromAccountId === payload.toAccountId) {
+        throw new OpError('INVALID_PAYLOAD', 'fromAccountId and toAccountId must differ');
+      }
+      if (!/^\d+$/.test(payload.amountTinybars) || BigInt(payload.amountTinybars) <= 0n) {
+        throw new OpError('INVALID_PAYLOAD', 'amountTinybars must be a positive integer string');
+      }
+      // Consume the confirmation token — binds signed bytes to what the user reviewed.
+      confirmations.consume(confirmation, payload);
+      // Reconstruct the unsigned transaction from base64 bytes.
+      const txBytes = Uint8Array.from(Buffer.from(payload.transactionBytes, 'base64'));
+      const tx = Transaction.fromBytes(txBytes);
+      // Sign inside a scoped callback so the private key is wiped after use.
+      keyring.withHederaPrivateKey(account.hdIndex, (pk) => {
+        const hederaKey = PrivateKey.fromBytesECDSA(pk);
+        hederaKey.signTransaction(tx);
+      });
+      const signedBytes = Buffer.from(tx.toBytes()).toString('base64');
+      return { kind: 'hedera-transfer' as const, signerKind: 'hd' as const, signedBytes };
+    }
+
+    if (request.payload.kind === 'hedera-account-create') {
+      const { payload, confirmation, account } = request;
+      // Consume the confirmation token — binds signed bytes to what was reviewed.
+      confirmations.consume(confirmation, payload);
+      // Reconstruct the unsigned transaction from base64 bytes.
+      const txBytes = Uint8Array.from(Buffer.from(payload.transactionBytes, 'base64'));
+      const tx = Transaction.fromBytes(txBytes);
+      // Sign with the payer key (required) inside a scoped callback, then wipe all references.
+      let payerKey: PrivateKey | null = null;
+      try {
+        payerKey = PrivateKey.fromStringECDSA(payload.payerPrivateKeyHex);
+        payerKey.signTransaction(tx);
+      } finally {
+        // Zero out references — the payer key is never cached, returned, or logged.
+        payload.payerPrivateKeyHex = '';
+        payerKey = null;
+      }
+      // Optionally sign with the wallet's derived key (proof of intent; not
+      // required by the network). Derived key is wiped by the keyring callback.
+      keyring.withHederaPrivateKey(account.hdIndex, (walletPk) => {
+        const walletKey = PrivateKey.fromBytesECDSA(walletPk);
+        walletKey.signTransaction(tx);
+      });
+      const signedBytes = Buffer.from(tx.toBytes()).toString('base64');
+      return { kind: 'hedera-account-create' as const, signerKind: 'hd' as const, signedBytes };
+    }
+
+    return request.payload.kind === 'btc-psbt'
+      ? btcSigner.sign(request)
+      : hdSigner.sign(request);
   },
 
   /**
@@ -294,14 +395,39 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
    * account's own address. Arbitrary messages go through `sign` + confirmation.
    */
   async signAddressProof({ index, message }) {
-    const { keyring, signer } = requireUnlocked();
+    const { keyring, hdSigner } = requireUnlocked();
     const m = ADDRESS_PROOF_RE.exec(message);
     const address = keyring.evmAddress(index);
     if (!m || m[1] !== address.toLowerCase()) throw new OpError('INVALID_PROOF_MESSAGE', 'Refusing to sign');
     const payload = { kind: 'evm-personal-message' as const, from: address, message: toHex(new TextEncoder().encode(message)) };
-    const res = await signer.sign({ account: { id: `proof-${index}`, hdIndex: index }, payload, confirmation: signer.confirmations.issue(payload) });
+    const res = await hdSigner.sign({ account: { id: `proof-${index}`, hdIndex: index }, payload, confirmation: hdSigner.confirmations.issue(payload) });
     if (res.kind !== 'evm-personal') throw new OpError('SIGNING_FAILED', 'Unexpected signature');
     return res.signature;
+  },
+
+  /**
+   * Fixed-format Bitcoin ownership proof. The message names the account, the
+   * network and the address, and the worker independently re-derives the
+   * address, so it can never sign for an address it does not control.
+   */
+  async signBtcAddressProof({ index, network, addressType, message }) {
+    const { keyring } = requireUnlocked();
+    touch();
+    const address = keyring.btcAddress(index, addressType, network);
+    const m = BTC_PROOF_RE.exec(message);
+    if (!m || m[1] !== network || m[2] !== address) {
+      throw new OpError('INVALID_PROOF_MESSAGE', 'Refusing to sign');
+    }
+    const proof = keyring.withBtcPrivateKey(index, addressType, network, (privateKey) =>
+      btcOwnershipProof(privateKey, message),
+    );
+    return { proof };
+  },
+
+  async hederaPublicKey({ index }) {
+    const { keyring } = requireUnlocked();
+    touch();
+    return { publicKey: keyring.hederaPublicKey(index) };
   },
 
   async setAutoLock({ minutes }) {

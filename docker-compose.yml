@@ -23,7 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
-    ports: ["127.0.0.1:6379:6379"]
+    ports: ["127.0.0.1:6380:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -48,6 +48,8 @@ services:
       HISTORY_PROVIDER_31337: scanner
       ALLOWED_ORIGINS: http://localhost:3000
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      BTC_ESPLORA_URL: https://mempool.space/testnet4/api
+      BTC_NETWORK: testnet4
     ports: ["127.0.0.1:8080:8080", "127.0.0.1:9090:9090"]
     depends_on:
       postgres: { condition: service_healthy }

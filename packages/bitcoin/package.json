@@ -1,0 +1,26 @@
+{
+  "name": "@qd/bitcoin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": { ".": "./src/index.ts" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@qd/blockchain": "workspace:*",
+    "@qd/shared-types": "workspace:*",
+    "@qd/wallet-core": "workspace:*",
+    "@scure/base": "2.4.0",
+    "@scure/btc-signer": "2.4.1"
+  },
+  "devDependencies": {
+    "@scure/bip39": "2.4.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

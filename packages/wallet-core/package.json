@@ -18,6 +18,7 @@
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@qd/qd-crypto": "workspace:*",
+    "@scure/base": "2.4.0",
     "@scure/bip32": "2.4.0",
     "@scure/bip39": "2.4.0"
   },

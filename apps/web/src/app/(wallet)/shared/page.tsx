@@ -9,6 +9,9 @@ import { SharedWalletsScreen } from '@/features/shared/shared-wallets';
  * useSearchParams needs a Suspense boundary under static export.
  */
 export default function SharedPage() {
+  if (process.env.NEXT_PUBLIC_ENABLE_SHARED_WALLETS !== 'true') {
+    return <p className="py-8 text-subtle">Shared wallets are disabled.</p>;
+  }
   return (
     <Suspense
       fallback={

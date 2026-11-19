@@ -1,12 +1,16 @@
 'use client';
-import { useMemo } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { toUsdCents, type Asset, type Network } from '@qd/blockchain';
+import { toUsdCents, type Asset, type BlockchainAdapter, type Network } from '@qd/blockchain';
+import type { BitcoinAdapter } from '@qd/bitcoin';
+import type { EvmAdapter } from '@qd/evm';
 import type { ActivityItem } from '@qd/shared-types';
-import { getAdapter, registry } from './chains';
+import { getAdapter, getBitcoinAdapter, getEvmAdapter, getHederaAdapter, registry } from './chains';
 import { getApi } from './api';
 import { filterEnabledNetworks, unmodelledNetworkIds } from './network-filter';
-import { useMeta, useSession, type AccountMeta } from './store';
+import { useMeta, useSelectedAccount, useSession, type AccountMeta } from './store';
+import { readLinkedHederaAccount } from './hedera-link';
+import { vault } from './vault-client';
 
 /** Networks wallet-api will proxy. Public endpoint, so it answers before unlock too. */
 export function useServerNetworks() {
@@ -45,8 +49,7 @@ export function useUnmodelledNetworks(): string[] {
   );
 }
 
-export function useNetwork() {
-  const networkId = useMeta((s) => s.networkId);
+export function useNetwork() {  const networkId = useMeta((s) => s.networkId);
   const selectable = useSelectableNetworks();
   // A backend with no upstream configured lists nothing. Falling back to the local
   // registry keeps the UI able to explain itself instead of dereferencing undefined.
@@ -54,10 +57,104 @@ export function useNetwork() {
   return list.find((n) => n.id === networkId) ?? list[0]!;
 }
 
-export function useAdapter() {
+/**
+ * Read-only adapter for the selected network. Bitcoin instances are keyed by
+ * address type because fee size estimates differ per spending scheme.
+ */
+export function useAdapter(): BlockchainAdapter {
+  const network = useNetwork();
+  const account = useSelectedAccount();
+  const custom = useMeta((s) => s.customRpc[network.id]);
+  const btcAddressType = useMeta((s) => s.btcAddressType);
+  const hederaAccountId = useMeta((s) =>
+    network.family === 'hedera'
+      ? readLinkedHederaAccount(s.hederaAccountIds, account?.index)
+      : undefined,
+  );
+  return useMemo(
+    () => {
+      if (network.family === 'bitcoin') return getBitcoinAdapter(network.id, btcAddressType);
+      if (network.family === 'hedera') return getHederaAdapter(network.id, hederaAccountId);
+      return getEvmAdapter(network.id, custom);
+    },
+    [network, custom, btcAddressType, hederaAccountId],
+  );
+}
+
+/**
+ * The EVM adapter for the selected network. Signing flows need the concrete
+ * type (payload shape, fee parameters), so they take this instead of the
+ * family-agnostic `useAdapter`.
+ */
+export function useEvmAdapter(): EvmAdapter {
   const network = useNetwork();
   const custom = useMeta((s) => s.customRpc[network.id]);
-  return useMemo(() => getAdapter(network.id, custom), [network.id, custom]);
+  return useMemo(() => {
+    if (network.family !== 'evm') throw new Error(`Not an EVM network: ${network.id}`);
+    return getEvmAdapter(network.id, custom);
+  }, [network, custom]);
+}
+
+/** The Bitcoin adapter for the selected network and address type. */
+export function useBitcoinAdapter(): BitcoinAdapter {
+  const network = useNetwork();
+  const addressType = useMeta((s) => s.btcAddressType);
+  return useMemo(() => {
+    if (network.family !== 'bitcoin') throw new Error(`Not a Bitcoin network: ${network.id}`);
+    return getBitcoinAdapter(network.id, addressType);
+  }, [network, addressType]);
+}
+
+/**
+ * Derives (once) and caches the Bitcoin address for an account index on the
+ * selected network. Addresses are public, so they live in the metadata store;
+ * the key itself never leaves the worker.
+ */
+export function useBitcoinAddressForAccount(index: number | undefined): string | undefined {
+  const network = useNetwork();
+  const addressType = useMeta((s) => s.btcAddressType);
+  const key = index !== undefined && network.family === 'bitcoin' ? `${network.id}|${addressType}|${index}` : '';
+  const cached = useMeta((s) => (key ? s.btcAddresses[key] : undefined));
+  const remember = useMeta((s) => s.setBtcAddress);
+
+  useEffect(() => {
+    if (!key || cached || index === undefined || network.family !== 'bitcoin') return;
+    let cancelled = false;
+    void vault
+      .call('btcAddress', { index, network: network.bitcoin.chain, addressType })
+      .then(({ address }) => {
+        if (!cancelled) remember(key, address);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [key, cached, index, network, addressType, remember]);
+
+  return cached;
+}
+
+/**
+ * Address the UI should display and read balances for on the selected network.
+ *
+ * EVM accounts use the address stored with the account metadata. Bitcoin
+ * addresses are derived on demand inside the KeyWorker and cached in the
+ * (non-secret) metadata store, keyed by network and address type. Nothing is
+ * returned until the worker has produced the address, so callers never show a
+ * placeholder as if it were a real address.
+ */
+export function useAccountAddress(): string | undefined {
+  const account = useSelectedAccount();
+  const network = useNetwork();
+  const btc = useBitcoinAddressForAccount(account?.index);
+  const hederaAccountId = useMeta((s) =>
+    network.family === 'hedera'
+      ? readLinkedHederaAccount(s.hederaAccountIds, account?.index)
+      : undefined,
+  );
+  if (network.family === 'bitcoin') return btc;
+  if (network.family === 'hedera') return hederaAccountId;
+  return account?.address;
 }
 
 export interface Holding {
@@ -126,24 +223,57 @@ export function useValuedHoldings(address: string | undefined) {
   return { holdings, prices, valued, totalCents };
 }
 
-/** Backend history merged with transactions this device broadcast. */
+/**
+ * Backend history merged with transactions this device broadcast. Bitcoin
+ * history is address-scoped (Core has no account concept); EVM history is
+ * account-scoped on the backend.
+ */
 export function useActivity(account: AccountMeta | undefined) {
   const network = useNetwork();
+  const address = useAccountAddress();
   const localTxs = useMeta((s) => s.localTxs);
   const apiOnline = useSession((s) => s.apiOnline);
+  const bitcoin = network.family === 'bitcoin';
+  const hedera = network.family === 'hedera';
+  const hederaAccountId = useMeta((s) =>
+    hedera ? readLinkedHederaAccount(s.hederaAccountIds, account?.index) : undefined,
+  );
+  const scope = hedera ? hederaAccountId : bitcoin ? address : account?.apiId;
   const remote = useQuery({
-    queryKey: ['activity', network.id, account?.apiId],
-    enabled: !!account?.apiId && apiOnline,
+    queryKey: ['activity', network.id, scope],
+    enabled: !!scope && apiOnline,
     refetchInterval: 20_000,
     // Returning to the app re-syncs: the API indexes this account's addresses from the chain on each request.
     refetchOnWindowFocus: 'always',
     retry: 1,
-    queryFn: async () => (await (await getApi()).activity(account!.apiId!, network.id)).items,
+    queryFn: async () => {
+      const api = await getApi();
+      if (network.family === 'hedera') {
+        return (await api.hederaHistory(scope!, undefined)).items.map((i) => ({
+          hash: i.transactionId,
+          networkId: i.networkId,
+          direction: i.direction,
+          from: i.from,
+          to: i.to,
+          assetId: `${network.id}:native`,
+          amount: String(i.amountTinybars),
+          fee: String(i.feeTinybars),
+          status: i.status,
+          timestamp: i.timestamp,
+          flags: [] as 'suspected_poisoning'[],
+        }));
+      }
+      if (network.family === 'bitcoin') return (await api.btcHistory(network.bitcoin.chain, address!)).items;
+      return (await api.activity(account!.apiId!, network.id)).items;
+    },
   });
 
   const items = useMemo(() => {
-    if (!account) return [];
-    const me = account.address.toLowerCase();
+    if (!account || !address) return [];
+    // For Hedera the "address" is the Account ID; local tx tracking for Hedera
+    // is deferred to Phase 2B (transfers not yet implemented).
+    if (hedera) return [...(remote.data ?? [])].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+    const me = address.toLowerCase();
     const local: ActivityItem[] = localTxs
       .filter((t) => t.networkId === network.id && (t.from.toLowerCase() === me || t.to.toLowerCase() === me))
       .map((t) => ({
@@ -157,16 +287,16 @@ export function useActivity(account: AccountMeta | undefined) {
         ...(t.fee ? { fee: t.fee } : {}),
         status: t.status,
         timestamp: new Date(t.createdAt).toISOString(),
-        flags: [],
+        flags: [] as 'suspected_poisoning'[],
       }));
     const byHash = new Map<string, ActivityItem>();
     const key = (i: ActivityItem) => `${i.hash.toLowerCase()}|${i.assetId}`;
     for (const i of local) byHash.set(key(i), i);
     // Remote wins for status once indexed, but keep local-only pending items.
     // flags is defaulted here because the list dereferences it unconditionally.
-    for (const i of remote.data ?? []) byHash.set(key(i), { ...i, flags: i.flags ?? [] });
+    for (const i of remote.data ?? []) byHash.set(key(i), { ...i, flags: (i.flags ?? []) as 'suspected_poisoning'[] });
     return [...byHash.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  }, [account, localTxs, network.id, remote.data]);
+  }, [account, address, localTxs, network.id, remote.data]);
 
   return { items, isLoading: remote.isLoading && items.length === 0, remote };
 }

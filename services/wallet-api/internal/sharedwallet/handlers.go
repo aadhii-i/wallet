@@ -15,6 +15,8 @@ import (
 	"github.com/qdwallet/wallet-api/internal/store"
 )
 
+const SepoliaChainID int64 = 11155111
+
 type Handlers struct {
 	svc      *Service
 	relayer  *Relayer
@@ -480,6 +482,10 @@ func (h *Handlers) createProposal(w http.ResponseWriter, r *http.Request) {
 		TTLSeconds           int64  `json:"ttlSeconds"`
 	}
 	if !decode(w, r, &req) {
+		return
+	}
+	if req.ChainID != SepoliaChainID {
+		httpx.BadRequest(w, r, "UNSUPPORTED_CHAIN", "Shared wallet execution is available on Ethereum Sepolia only")
 		return
 	}
 	acct, err := uuid.Parse(req.AccountID)

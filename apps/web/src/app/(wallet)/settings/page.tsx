@@ -61,24 +61,37 @@ export default function SettingsPage() {
       </Group>
 
       <Group title="Networks" hint="By default, QD Wallet reaches networks through its own servers so provider keys stay private. You can use your own RPC instead.">
-        {registry.all().map((n) => (
-          <button key={n.id} type="button" onClick={() => setRpcSheet(n.id)} className="flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-hover">
-            <NetworkDot network={n} size={24} />
-            <span className="flex-1">
-              <span className="block font-medium">{n.name}</span>
-              <span className="block truncate text-xs text-subtle">
-                {customRpc[n.id]
-                  ? `Custom RPC · ${new URL(customRpc[n.id]!).host}`
-                  : proxied.has(n.id)
-                    ? 'QD Wallet RPC'
-                    : 'Not proxied by wallet-api · needs your own RPC'}
+        {registry.all().map((n) =>
+          n.family === 'bitcoin' ? (
+            // Bitcoin has no user-supplied node: the only supported backend is
+            // wallet-api's own Bitcoin Core, which holds no keys.
+            <div key={n.id} className="flex w-full items-center gap-3 px-4 py-3.5">
+              <NetworkDot network={n} size={24} />
+              <span className="flex-1">
+                <span className="block font-medium">{n.name}</span>
+                <span className="block truncate text-xs text-subtle">QD Wallet node · watch-only</span>
               </span>
-            </span>
-            <ChevronRight size={18} className="text-subtle" />
-          </button>
-        ))}
+            </div>
+          ) : (
+            <button key={n.id} type="button" onClick={() => setRpcSheet(n.id)} className="flex w-full items-center gap-3 px-4 py-3.5 text-left hover:bg-surface-hover">
+              <NetworkDot network={n} size={24} />
+              <span className="flex-1">
+                <span className="block font-medium">{n.name}</span>
+                <span className="block truncate text-xs text-subtle">
+                  {customRpc[n.id]
+                    ? `Custom RPC · ${new URL(customRpc[n.id]!).host}`
+                    : proxied.has(n.id)
+                      ? 'QD Wallet RPC'
+                      : 'Not proxied by wallet-api · needs your own RPC'}
+                </span>
+              </span>
+              <ChevronRight size={18} className="text-subtle" />
+            </button>
+          ),
+        )}
       </Group>
 
+      {process.env.NEXT_PUBLIC_ENABLE_SHARED_WALLETS === 'true' && (
       <div id="gas-service" className="scroll-mt-20">
       <Group
         title="Network & Gas"
@@ -87,6 +100,8 @@ export default function SettingsPage() {
         <GasServiceSection />
       </Group>
       </div>
+
+      )}
 
       <Group title="About">
         <Row icon={<Server size={18} />} label="Version" value="0.1.0 (V1 preview)" />
@@ -127,6 +142,9 @@ function Row({ icon, label, value }: { icon: React.ReactNode; label: string; val
 
 function RpcSheet({ networkId, onClose }: { networkId: string | null; onClose: () => void }) {
   const network = networkId ? registry.byId(networkId) : undefined;
+  // A custom RPC is an EVM-only concept; Bitcoin always goes through
+  // wallet-api's Bitcoin Core node.
+  const evm = network && network.family === 'evm' ? network : undefined;
   const current = useMeta((s) => (networkId ? s.customRpc[networkId] : undefined));
   const setCustomRpc = useMeta((s) => s.setCustomRpc);
   const qc = useQueryClient();
@@ -135,7 +153,7 @@ function RpcSheet({ networkId, onClose }: { networkId: string | null; onClose: (
   const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
-    if (!network) return;
+    if (!evm) return;
     setBusy(true);
     setError(null);
     try {
@@ -145,8 +163,8 @@ function RpcSheet({ networkId, onClose }: { networkId: string | null; onClose: (
       // Verify the RPC serves the expected chain before trusting it (chain id never comes from RPC for signing).
       const res = await fetch(u, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_chainId', params: [] }) });
       const j = (await res.json()) as { result?: string };
-      if (!j.result || parseInt(j.result, 16) !== network.chainId) throw new Error(`This RPC is not for ${network.name} (chain ${network.chainId})`);
-      setCustomRpc(network.id, u.toString());
+      if (!j.result || parseInt(j.result, 16) !== evm.chainId) throw new Error(`This RPC is not for ${evm.name} (chain ${evm.chainId})`);
+      setCustomRpc(evm.id, u.toString());
       void qc.invalidateQueries();
       toast.success('Custom RPC saved');
       onClose();
@@ -158,7 +176,7 @@ function RpcSheet({ networkId, onClose }: { networkId: string | null; onClose: (
   };
 
   return (
-    <Sheet open={!!network} onOpenChange={(o) => !o && onClose()} title={network ? `${network.name} RPC` : ''} description="A custom RPC sees your addresses and IP. Only use one you trust.">
+    <Sheet open={!!evm} onOpenChange={(o) => !o && onClose()} title={evm ? `${evm.name} RPC` : ''} description="A custom RPC sees your addresses and IP. Only use one you trust.">
       <label htmlFor="rpc-url" className="mb-1.5 block text-sm font-medium">
         RPC URL
       </label>

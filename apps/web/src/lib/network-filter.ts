@@ -11,6 +11,11 @@ import type { Network } from '@qd/blockchain';
  *
  * `customRpcIds` are networks the user pointed at their own RPC. Those bypass
  * the backend entirely (spec §25.5) and stay selectable whatever the server says.
+ *
+ * Non-EVM chains (Bitcoin, etc.) are never listed by the EVM-only `/v1/networks`
+ * endpoint. They are always kept in the selectable set when they exist in the
+ * client registry, because the backend has dedicated endpoints for them and the
+ * network response is not the right signal for their availability.
  */
 export function filterEnabledNetworks(
   networks: readonly Network[],
@@ -19,7 +24,7 @@ export function filterEnabledNetworks(
 ): Network[] {
   if (enabledIds === null) return [...networks];
   const allowed = new Set([...enabledIds, ...customRpcIds]);
-  return networks.filter((n) => allowed.has(n.id));
+  return networks.filter((n) => n.family !== 'evm' || allowed.has(n.id));
 }
 
 /**

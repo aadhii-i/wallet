@@ -1,4 +1,7 @@
 import type { ConfirmationToken, SignatureResult, SigningPayload, SigningRequest } from '@qd/wallet-core';
+import type { BitcoinAddressType } from '@qd/blockchain';
+
+export type BitcoinNetworkName = 'mainnet' | 'testnet4';
 
 /** Typed message protocol between the UI thread and the KeyWorker. */
 export interface VaultOps {
@@ -8,6 +11,16 @@ export interface VaultOps {
   unlock: { req: { password: string }; res: { ok: true } };
   lock: { req: void; res: void };
   addresses: { req: { indexes: number[] }; res: string[] };
+  /** BIP-84/86 address plus its derivation path, derived inside the worker. */
+  btcAddress: {
+    req: { index: number; network: BitcoinNetworkName; addressType: BitcoinAddressType };
+    res: { address: string; path: string };
+  };
+  /** Account-level public descriptor for Bitcoin address derivation. */
+  btcDescriptor: {
+    req: { network: BitcoinNetworkName; addressType: BitcoinAddressType };
+    res: { descriptor: string; xpub: string; fingerprint: string };
+  };
   getBackupPhrase: { req: void; res: string };
   markBackedUp: { req: void; res: void };
   revealPhrase: { req: { password: string }; res: string };
@@ -16,6 +29,13 @@ export interface VaultOps {
   issueConfirmation: { req: { payload: SigningPayload }; res: ConfirmationToken };
   sign: { req: SigningRequest; res: SignatureResult };
   signAddressProof: { req: { index: number; message: string }; res: string };
+  /** Bitcoin ownership proof: `0x` + pubkey(33) + compact ECDSA sig(64). */
+  signBtcAddressProof: {
+    req: { index: number; network: BitcoinNetworkName; addressType: BitcoinAddressType; message: string };
+    res: { proof: string };
+  };
+  /** Compressed secp256k1 public key (33-byte, lowercase hex) for a Hedera account. */
+  hederaPublicKey: { req: { index: number }; res: { publicKey: string } };
   setAutoLock: { req: { minutes: number }; res: void };
   // Shared-wallet QD key material. Results carry only public values.
   qdShareUnlock: { req: { password: string }; res: void };

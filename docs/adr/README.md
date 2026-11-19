@@ -20,5 +20,6 @@
 | [0017](0017-shared-wallet-approval-policy-separate-from-raccoon-threshold.md) | Shared-wallet approvals are a policy layer, separate from the Raccoon key | Accepted (research/testnet) |
 | [0018](0018-shared-wallet-trusted-dealer-keygen-and-hpke-share-delivery.md) | Shared-wallet key generation by a trusted dealer, with HPKE X-Wing share delivery | Accepted (research/testnet) |
 | [0019](0019-networked-threshold-raccoon-signing-and-qdaccount-execution.md) | Networked Threshold Raccoon signing, and execution through an on-chain Raccoon verifier (QdAccount) | Accepted (research/testnet) |
+| [0020](0020-bitcoin-support-and-address-policy.md) | Bitcoin support and address policy | Accepted |
 
 ADR 0013 (threshold ECDSA for EVM EOAs) is still open. D1 showed that QD is a lattice scheme, not threshold ECDSA, so 0013 is only needed if ECDSA MPC accounts are still wanted.

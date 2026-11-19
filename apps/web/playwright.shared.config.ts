@@ -6,7 +6,7 @@ import { defineConfig, devices } from '@playwright/test';
  * Multi-user shared-wallet E2E: the production static build + a real wallet-api
  * (in-memory store). No route mocking — every participant is its own browser
  * context with its own IndexedDB device key, i.e. its own backend user.
- * Prereq: `corepack pnpm@9.15.0 --filter @qd/web build`. Run: `make e2e-shared`.
+ * Build the web app with NEXT_PUBLIC_ENABLE_SHARED_WALLETS=true first. Run: `make e2e-shared`.
  */
 // QD_E2E_API_PORT lets the suite run while another API occupies :8080; the web
 // build must then point at it (NEXT_PUBLIC_API_URL=http://localhost:<port>).
@@ -35,24 +35,37 @@ export default defineConfig({
   projects: [{ name: 'desktop', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: `${ANVIL_BIN} --port ${ANVIL_PORT} --chain-id 31337 --silent`,
+      command: `${ANVIL_BIN} --port ${ANVIL_PORT} --chain-id 11155111 --silent`,
       port: Number(ANVIL_PORT),
-      reuseExistingServer: true,
+      reuseExistingServer: false,
     },
     {
       command: 'node scripts/serve-static.mjs',
       env: { PORT: '3100', NEXT_PUBLIC_API_URL: `http://localhost:${API_PORT}` }, // CSP connect-src
       url: 'http://localhost:3100',
-      reuseExistingServer: true,
+      reuseExistingServer: false,
     },
     {
       // DEV_CREDENTIAL_RATE_BURST: six fresh device registrations from one IP exceed the
       // default per-IP credential burst; the override is development-only.
-      command:
-        `cd ../../services/wallet-api && HTTP_ADDR=:${API_PORT} METRICS_ADDR=:${Number(API_PORT) + 1010} CGO_ENABLED=0 APP_ENV=development STORE=memory COOKIE_SECURE=false DEV_CREDENTIAL_RATE_BURST=200 ALLOWED_ORIGINS=http://localhost:3100 PRICE_PROVIDER=static ` +
-        `EVM_RPC_31337=anvil=http://127.0.0.1:${ANVIL_PORT} RELAYER_PRIVATE_KEY_31337=${ANVIL_RELAYER_KEY} go run ./cmd/wallet-api`,
+      command: 'go run ./cmd/wallet-api',
+      cwd: '../../services/wallet-api',
+      env: {
+        HTTP_ADDR: `:${API_PORT}`,
+        METRICS_ADDR: `:${Number(API_PORT) + 1010}`,
+        CGO_ENABLED: '0',
+        APP_ENV: 'development',
+        STORE: 'memory',
+        COOKIE_SECURE: 'false',
+        DEV_CREDENTIAL_RATE_BURST: '200',
+        ENABLE_SHARED_WALLETS: 'true',
+        ALLOWED_ORIGINS: 'http://localhost:3100',
+        PRICE_PROVIDER: 'static',
+        EVM_RPC_11155111: `anvil=http://127.0.0.1:${ANVIL_PORT}`,
+        RELAYER_PRIVATE_KEY_11155111: ANVIL_RELAYER_KEY,
+      },
       url: `http://localhost:${API_PORT}/healthz`,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 240_000,
       stdout: 'ignore',
       stderr: 'pipe',

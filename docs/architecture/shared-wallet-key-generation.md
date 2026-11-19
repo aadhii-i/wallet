@@ -60,7 +60,7 @@ QDWallet-ShareEnvelope|v1|walletId|keygenId|participantId|partyIndex|T|N|members
 | Key worker operations | `apps/web/src/lib/key-worker.ts`: `qdShareUnlock`, `qdShareStatus`, `qdPrepareKeygen`, `qdDeal`, `qdAcceptShare` |
 | Signed messages, safety number, client checks | `packages/rpc/src/shared-keygen.ts`, `ApiClient` key-generation methods |
 | Ceremony rules, routes | `services/wallet-api/internal/sharedwallet/keygen*.go` |
-| Persistence | `internal/store/{memory,postgres}/shared_keygen.go`, migration `00003_shared_key_generation.sql` |
+| Persistence | `internal/store/{memory,postgres}/shared_keygen.go`, migration `00009_shared_key_generation.sql` |
 | UI | the "Threshold key" card in `apps/web/src/features/shared/shared-wallets.tsx` |
 
 ## 4. Statuses
