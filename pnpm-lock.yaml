@@ -18,7 +18,7 @@ importers:
   apps/web:
     dependencies:
       '@hashgraph/sdk':
-        specifier: ^2.49.0
+        specifier: ^2.81.0
         version: 2.81.0(bn.js@5.2.5)(react-native@0.88.1(@babel/core@7.29.13)(@types/react@19.3.0)(react@19.3.0))
       '@qd/bitcoin':
         specifier: workspace:*
@@ -3063,7 +3063,7 @@ snapshots:
   '@grpc/proto-loader@0.7.15':
     dependencies:
       lodash.camelcase: 4.3.0
-      long: 5.3.1
+      long: 5.3.2
       protobufjs: 7.6.6
       yargs: 17.7.3
 
