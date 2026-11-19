@@ -3,7 +3,7 @@
  * OpenAPI codegen step lands (Makefile `gen`); keep field names identical to the spec.
  */
 
-export type ChainFamily = 'evm' | 'monero';
+export type ChainFamily = 'evm' | 'bitcoin' | 'monero' | 'hedera';
 /**
  * `unknown` is only ever produced by the backend, for a chain id supplied by
  * configuration that has no entry in its known-network table. The client
@@ -54,8 +54,12 @@ export interface Device {
 
 export interface ApiAddress {
   id: string;
-  networkFamily: 'evm';
+  networkFamily: 'evm' | 'bitcoin' | 'hedera';
   address: string;
+  /** Bitcoin only: which derivation/address scheme the address belongs to. */
+  addressType?: 'p2wpkh' | 'p2tr';
+  /** Hedera only: the shard.realm.num account identifier. */
+  hederaAccountId?: string;
 }
 
 export interface ApiAccount {
@@ -137,4 +141,89 @@ export type ClientSecurityEventType =
 export interface PricesResponse {
   prices: Record<string, { usd: string }>;
   updatedAt?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Bitcoin (`/v1/btc/*`, docs/api/openapi.yaml)
+// ---------------------------------------------------------------------------
+
+/** Bitcoin chain name as used in API paths and derivation paths. */
+export type BitcoinNetworkName = 'mainnet' | 'testnet4';
+export type BitcoinAddressType = 'p2wpkh' | 'p2tr';
+
+/** One spendable output from the Esplora blockchain index. */
+export interface ApiBtcUtxo {
+  txid: string;
+  vout: number;
+  /** Sats, decimal string (never a JS number). */
+  value: BaseUnits;
+  /** Previous output scriptPubKey, hex. */
+  scriptPubKey: string;
+  confirmations: number;
+  blockHeight?: number;
+}
+
+/** `estimatesmartfee` results in sat/vB, already clamped server-side. */
+export interface ApiBtcFees {
+  low: number;
+  market: number;
+  aggressive: number;
+  tipHeight: number;
+  /** ISO-8601. */
+  quotedAt: string;
+}
+
+export interface ApiBtcTransaction {
+  txid: string;
+  status: TxStatus;
+  confirmations: number;
+  blockHeight?: number;
+  /** ISO-8601, when the block is known. */
+  blockTime?: string;
+  fee?: BaseUnits;
+  /** Sum of outputs, sats. */
+  value: BaseUnits;
+  inputs: { address?: string; value: BaseUnits }[];
+  outputs: { address?: string; value: BaseUnits }[];
+}
+
+export interface ApiBtcBroadcastResult {
+  txid: string;
+}
+
+// ---------------------------------------------------------------------------
+// Hedera (`/v1/hedera/*`)
+// ---------------------------------------------------------------------------
+
+export interface ApiHederaBalance {
+  accountId: string;
+  tinybars: number;
+  hbar: string;
+}
+
+/**
+ * A single activity entry from a Mirror Node CRYPTOTRANSFER transaction,
+ * classified relative to the queried account. Mirrors the Go `HederaActivityItem`;
+ * int64 amounts become JS numbers (tinybars fit losslessly in 2^53).
+ */
+export interface ApiHederaActivityItem {
+  transactionId: string;
+  timestamp: string;
+  type: string;
+  direction: 'in' | 'out' | 'self';
+  from: string;
+  to: string;
+  /** 1 HBAR = 100,000,000 tinybars. */
+  amountTinybars: number;
+  /** Pre-formatted display string (truncated, never rounded), e.g. "1.00000000 HBAR". */
+  hbar: string;
+  feeTinybars: number;
+  status: 'confirmed' | 'failed';
+  networkId: string;
+}
+
+/** One page of Hedera activity; `nextCursor` is passed back as `?cursor=`. */
+export interface ApiHederaHistoryPage {
+  items: ApiHederaActivityItem[];
+  nextCursor?: string;
 }

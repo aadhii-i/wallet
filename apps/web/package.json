@@ -12,6 +12,8 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@hashgraph/sdk": "^2.49.0",
+    "@qd/bitcoin": "workspace:*",
     "@qd/blockchain": "workspace:*",
     "@qd/evm": "workspace:*",
     "@qd/qd-account": "workspace:*",

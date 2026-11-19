@@ -44,6 +44,7 @@ tags:
   - name: devices
   - name: wallets
   - name: chain
+  - name: bitcoin
   - name: transactions
   - name: security
   - name: public
@@ -321,6 +322,116 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
                   nextCursor: { type: string }
+
+  /v1/btc/{network}/fees:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+    get:
+      tags: [bitcoin]
+      operationId: btcFees
+      description: |
+        Fee estimates from the operator's Bitcoin Core node, in sat/vB, already
+        clamped to the server's configured floor and ceiling.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Fee estimates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fees]
+                properties:
+                  fees: { $ref: "#/components/schemas/BtcFees" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/address/{address}/utxos:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: address, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [bitcoin]
+      operationId: btcUtxos
+      description: Spendable outputs paying `address`, queried from the Esplora blockchain index.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Unspent outputs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [utxos]
+                properties:
+                  utxos: { type: array, items: { $ref: "#/components/schemas/BtcUtxo" } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/address/{address}/history:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: address, in: path, required: true, schema: { type: string } }
+      - { name: cursor, in: query, schema: { type: string } }
+    get:
+      tags: [bitcoin]
+      operationId: btcHistory
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Address history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
+                  nextCursor: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/tx/{hash}:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: hash, in: path, required: true, schema: { type: string, pattern: "^[0-9a-fA-F]{64}$" } }
+    get:
+      tags: [bitcoin]
+      operationId: btcTransaction
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Transaction lookup
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BtcTransaction" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/broadcast:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+    post:
+      tags: [bitcoin]
+      operationId: btcBroadcast
+      description: Broadcasts a signed raw transaction through the operator's Bitcoin Core node.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw]
+              properties:
+                raw: { type: string, description: "raw transaction hex, no 0x prefix" }
+      responses:
+        "200":
+          description: Accepted by the mempool
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [txid]
+                properties:
+                  txid: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
 
   /v1/rpc/evm/{chainId}:
     parameters:
@@ -1367,12 +1478,50 @@ components:
       required: [id, family, name, kind, nativeSymbol, nativeDecimals]
       properties:
         id: { type: string }
-        family: { type: string, enum: [evm, monero] }
+        family: { type: string, enum: [evm, bitcoin, monero] }
         chainId: { type: integer }
         name: { type: string }
         kind: { type: string, enum: [mainnet, testnet, local, unknown] }
         nativeSymbol: { type: string }
         nativeDecimals: { type: integer }
+    BtcFees:
+      type: object
+      required: [low, market, aggressive, tipHeight, quotedAt]
+      properties:
+        low: { type: number, description: "sat/vB" }
+        market: { type: number, description: "sat/vB" }
+        aggressive: { type: number, description: "sat/vB" }
+        tipHeight: { type: integer }
+        quotedAt: { type: string, format: date-time }
+    BtcUtxo:
+      type: object
+      required: [txid, vout, value, scriptPubKey, confirmations]
+      properties:
+        txid: { type: string }
+        vout: { type: integer }
+        value: { type: string, description: "satoshis, decimal string" }
+        scriptPubKey: { type: string, description: "hex" }
+        confirmations: { type: integer }
+        blockHeight: { type: integer }
+    BtcTransaction:
+      type: object
+      required: [txid, status, confirmations, value, inputs]
+      properties:
+        txid: { type: string }
+        status: { type: string, enum: [pending, confirmed, failed, replaced, dropped] }
+        confirmations: { type: integer }
+        blockHeight: { type: integer }
+        blockTime: { type: string, format: date-time }
+        fee: { type: string, description: "satoshis, decimal string" }
+        value: { type: string, description: "satoshis, decimal string" }
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [value]
+            properties:
+              address: { type: string }
+              value: { type: string, description: "satoshis, decimal string" }
     Transaction:
       type: object
       required: [id, networkId, hash, from, to, assetId, amount, status, createdAt]

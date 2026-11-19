@@ -121,7 +121,7 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
   await expect(form.getByLabel('Sender account')).toContainText('Treasury');
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('1');
-  await form.getByLabel('Network', { exact: true }).selectOption('31337');
+  await form.getByLabel('Network', { exact: true }).selectOption('11155111');
   await form.getByRole('button', { name: 'Review proposal' }).click();
   await expect(p1.getByText('This transaction requires approval from 3 of 5 participants.')).toBeVisible();
   await expect(p1.getByText(/requires approval from 3 of 5 participants/)).toBeVisible();
@@ -131,7 +131,7 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
   await expect(card1).toBeVisible();
   await expect(card1.getByLabel('Proposal status')).toHaveText('Awaiting approvals');
   await expect(card1.getByText('0/3 approvals', { exact: true })).toBeVisible();
-  await expect(card1).toContainText('Localhost (Anvil) (31337)');
+  await expect(card1).toContainText('Sepolia (11155111)');
   await expect(card1).toContainText('Proposed by');
   await expect(card1).toContainText('P1');
 

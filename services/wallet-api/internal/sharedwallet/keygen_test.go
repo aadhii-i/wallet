@@ -540,7 +540,7 @@ func TestKeygenExposesNoSecretMaterial(t *testing.T) {
 			}
 		}
 	}
-	schema, err := os.ReadFile("../../migrations/00003_shared_key_generation.sql")
+	schema, err := os.ReadFile("../../migrations/00009_shared_key_generation.sql")
 	if err != nil {
 		t.Fatal(err)
 	}

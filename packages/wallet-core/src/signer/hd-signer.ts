@@ -53,7 +53,7 @@ export class HDSigner implements Signer {
     return chainFamily === 'evm';
   }
 
-  async getAddress(account: AccountRef, chainFamily: ChainFamily): Promise<Hex> {
+  async getAddress(account: AccountRef, chainFamily: ChainFamily): Promise<string> {
     if (!this.supports(chainFamily)) throw new SignerError('UNSUPPORTED', `HD signer: ${chainFamily} not supported yet`);
     return this.keyring.evmAddress(account.hdIndex);
   }
@@ -61,6 +61,20 @@ export class HDSigner implements Signer {
   async sign({ account, payload, confirmation }: SigningRequest): Promise<SignatureResult> {
     if (this.keyring.locked) throw new SignerError('LOCKED', 'Wallet is locked');
     this.confirmations.consume(confirmation, payload);
+
+    if (payload.kind === 'btc-psbt') {
+      // Bitcoin PSBT signing lives in `@qd/bitcoin`, which owns sighashes and
+      // serialization; wallet-core only exposes the derived key.
+      throw new SignerError('UNSUPPORTED', 'Bitcoin PSBTs are signed by the Bitcoin signer');
+    }
+
+    if (payload.kind === 'hedera-transfer') {
+      throw new SignerError('UNSUPPORTED', 'Hedera transfers are signed by the key worker');
+    }
+
+    if (payload.kind === 'hedera-account-create') {
+      throw new SignerError('UNSUPPORTED', 'Hedera account creation is signed by the key worker');
+    }
 
     const expected = this.keyring.evmAddress(account.hdIndex);
     if (expected.toLowerCase() !== payload.from.toLowerCase()) {

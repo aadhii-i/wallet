@@ -10,6 +10,22 @@ import { fileURLToPath } from 'node:url';
 
 const INLINE_SCRIPT = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi;
 
+// Hedera Testnet transport endpoints used by @hashgraph/sdk's browser client:
+//   - WebClient submits gRPC-web over HTTPS (fetch) to these seven fixed nodes.
+//   - Mirror-node REST reads (receipts, balances) use the Testnet mirror host.
+// There is no WebSocket transport. Origins are listed explicitly — no wildcards.
+// Keep in sync with next.config.ts.
+const HEDERA_TESTNET_CONNECT_SRC = [
+  'https://testnet-node00-00-grpc.hedera.com',
+  'https://testnet-node01-00-grpc.hedera.com',
+  'https://testnet-node02-00-grpc.hedera.com',
+  'https://testnet-node03-00-grpc.hedera.com',
+  'https://testnet-node04-00-grpc.hedera.com',
+  'https://testnet-node05-00-grpc.hedera.com',
+  'https://testnet-node06-00-grpc.hedera.com',
+  'https://testnet.mirrornode.hedera.com',
+];
+
 export function inlineScriptHashes(html) {
   const hashes = new Set();
   for (const m of html.matchAll(INLINE_SCRIPT)) {
@@ -29,7 +45,7 @@ export function cspForHtml(html, { apiOrigin, extraConnect = [] } = {}) {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self'",
-    `connect-src 'self' ${apiOrigin ?? ''} ${extraConnect.join(' ')}`.replace(/\s+/g, ' ').trim(),
+    `connect-src 'self' ${apiOrigin ?? ''} ${HEDERA_TESTNET_CONNECT_SRC.join(' ')} ${extraConnect.join(' ')}`.replace(/\s+/g, ' ').trim(),
     "worker-src 'self'",
     "manifest-src 'self'",
     "frame-ancestors 'none'",

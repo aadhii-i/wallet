@@ -16,6 +16,7 @@ export type WalletErrorCode =
   | 'SIGNING_FAILED'
   | 'WALLET_LOCKED'
   | 'CHAIN_MISMATCH'
+  | 'UNSUPPORTED'
   | 'UNKNOWN';
 
 /**

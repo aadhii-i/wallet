@@ -71,9 +71,18 @@ export interface Page<T> {
 export interface BlockchainAdapter<TUnsigned = unknown, TFeeParams = unknown> {
   readonly family: ChainFamily;
   readonly network: Network;
+  /** Assets this adapter can price and display (native first). */
+  listAssets(): readonly Asset[];
   validateAddress(input: string): AddressValidation;
   getBalance(address: string): Promise<bigint>;
   getTokenBalance(address: string, asset: Asset): Promise<bigint>;
+  /** Balances for every listed asset; a failed token read is `null`, never a throw. */
+  getAllBalances(address: string): Promise<Map<string, bigint | null>>;
+  /**
+   * Connectivity check. EVM adapters also return `chainId` so the UI can refuse
+   * an RPC that serves a different chain; Bitcoin adapters return only the tip.
+   */
+  getChainStatus(): Promise<{ blockNumber: bigint; chainId?: number }>;
   getTransaction(hash: string): Promise<TxLookup | null>;
   getTransactionHistory(address: string, cursor?: string): Promise<Page<ActivityItem>>;
   estimateFee(intent: TransferIntent): Promise<FeeQuote<TFeeParams>>;

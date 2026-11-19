@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -39,6 +40,12 @@ type PriceProviderKind string
 const (
 	PriceStatic    PriceProviderKind = "static"
 	PriceCoingecko PriceProviderKind = "coingecko"
+)
+
+// Bitcoin networks wallet-api can be configured for.
+const (
+	BitcoinNetworkMainnet  = "mainnet"
+	BitcoinNetworkTestnet4 = "testnet4"
 )
 
 // RPCUpstream is one configured upstream URL for a chain, with an optional
@@ -87,7 +94,8 @@ type Config struct {
 	// submit Raccoon-signed shared-wallet calls to QdAccount contracts. A
 	// relayer key cannot move shared funds. Refused in production while the
 	// on-chain Raccoon verifier is research-grade (ADR 0019).
-	RelayerKeys map[int64]string
+	RelayerKeys         map[int64]string
+	EnableSharedWallets bool
 	// GasLowBalanceWei (GAS_LOW_BALANCE_WEI_<chainId>, decimal wei) overrides
 	// when a chain's gas service account is reported as low. Unset: enough to
 	// set up one more wallet key and execute once at current gas prices.
@@ -96,6 +104,17 @@ type Config struct {
 
 	PriceProvider   PriceProviderKind
 	CoingeckoAPIKey string
+
+	// Bitcoin (Esplora REST API) configuration. Bitcoin support is off unless
+	// BTCEsploraURL is set; see BTCEnabled.
+	BTCEsploraURL    string
+	BTCNetwork       string
+	BTCFeeFloorSatVB int64
+	BTCMaxFeeSatVB   int64
+
+	// Hedera Mirror Node configuration. The default public testnet Mirror Node
+	// is used when HederaMirrorURL is empty; see HederaEnabled.
+	HederaMirrorURL string
 
 	OTLPEndpoint string
 }
@@ -107,7 +126,7 @@ func getenv(key, def string) string {
 	return def
 }
 
-func getint(key string, def int) int {
+func getNonnegativeInt(key string, def int) int {
 	v := os.Getenv(key)
 	if v == "" {
 		return def
@@ -131,6 +150,18 @@ func getbool(key string, def bool) bool {
 	return b
 }
 
+func getint(key string, def int64) int64 {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 // Load reads configuration from the environment. It does not fail on
 // missing optional values; call Validate to enforce production invariants.
 func Load() (*Config, error) {
@@ -140,15 +171,21 @@ func Load() (*Config, error) {
 		MetricsAddr:         getenv("METRICS_ADDR", ":9090"),
 		Store:               StoreKind(getenv("STORE", string(StoreMemory))),
 		StoreSnapshot:       os.Getenv("STORE_SNAPSHOT"),
+		EnableSharedWallets: getbool("ENABLE_SHARED_WALLETS", false),
 		DatabaseURL:         getenv("DATABASE_URL", ""),
 		MigrateOnStart:      getbool("MIGRATE_ON_START", false),
-		DevCredentialBurst:  getint("DEV_CREDENTIAL_RATE_BURST", 0),
+		DevCredentialBurst:  getNonnegativeInt("DEV_CREDENTIAL_RATE_BURST", 0),
 		RedisURL:            getenv("REDIS_URL", ""),
 		CookieSecure:        getbool("COOKIE_SECURE", true),
 		DevKeyDir:           getenv("DEV_KEY_DIR", "./.dev-keys"),
 		EnableLocalNetworks: getbool("ENABLE_LOCAL_NETWORKS", true),
 		PriceProvider:       PriceProviderKind(getenv("PRICE_PROVIDER", string(PriceStatic))),
 		CoingeckoAPIKey:     getenv("COINGECKO_API_KEY", ""),
+		BTCEsploraURL:       getenv("BTC_ESPLORA_URL", ""),
+		BTCNetwork:          getenv("BTC_NETWORK", ""),
+		BTCFeeFloorSatVB:    getint("BTC_FEE_FLOOR_SAT_VB", 1),
+		BTCMaxFeeSatVB:      getint("BTC_MAX_FEE_SAT_VB", 500),
+		HederaMirrorURL:     getenv("HEDERA_MIRROR_URL", ""),
 		OTLPEndpoint:        getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
 	if cfg.AppEnv == EnvDevelopment {
@@ -278,6 +315,7 @@ func (c *Config) Validate() error {
 		if !c.CookieSecure {
 			errs = append(errs, "COOKIE_SECURE=false is refused in production")
 		}
+		errs = append(errs, c.validateBitcoin()...)
 		if c.DevCredentialBurst != 0 {
 			errs = append(errs, "DEV_CREDENTIAL_RATE_BURST is a development-only setting and is refused in production")
 		}
@@ -290,6 +328,41 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// BTCEnabled reports whether Bitcoin support is configured. Bitcoin is off
+// until an Esplora URL is provided.
+func (c *Config) BTCEnabled() bool {
+	return c.BTCEsploraURL != ""
+}
+
+// HederaEnabled reports whether a custom Hedera Mirror Node URL is configured.
+// When false the hedera package uses the default public testnet Mirror Node.
+func (c *Config) HederaEnabled() bool {
+	return c.HederaMirrorURL != ""
+}
+
+// validateBitcoin enforces Bitcoin invariants in production: an Esplora URL
+// must be present and must use HTTPS (mempool.space is always HTTPS; a plain
+// HTTP URL would expose data in transit).
+func (c *Config) validateBitcoin() []string {
+	var errs []string
+	if !c.BTCEnabled() {
+		return nil
+	}
+	u, err := url.Parse(c.BTCEsploraURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		errs = append(errs, "BTC_ESPLORA_URL must be a valid https URL")
+	} else if u.Scheme == "http" {
+		host := u.Hostname()
+		if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+			errs = append(errs, "BTC_ESPLORA_URL must use https for a non-loopback host")
+		}
+	}
+	if c.BTCNetwork != BitcoinNetworkMainnet && c.BTCNetwork != BitcoinNetworkTestnet4 {
+		errs = append(errs, "BTC_NETWORK must be \""+BitcoinNetworkMainnet+"\" or \""+BitcoinNetworkTestnet4+"\"")
+	}
+	return errs
 }
 
 // AccessCookieName returns the cookie name used for the access token,

@@ -4,7 +4,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { Check, Pencil, Plus } from 'lucide-react';
 import { formatDisplay } from '@qd/blockchain';
 import { useQueryClient } from '@tanstack/react-query';
-import { useAdapter } from '@/lib/hooks';
+import { useAdapter, useBitcoinAddressForAccount } from '@/lib/hooks';
 import { toast, useMeta, type AccountMeta } from '@/lib/store';
 import { addNextAccount } from '@/lib/accounts';
 import { syncWithBackend } from '@/lib/sync';
@@ -74,9 +74,13 @@ function AccountRow({ account, active, onSelect }: { account: AccountMeta; activ
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(account.name);
   const adapter = useAdapter();
+  const network = adapter.network;
+  const btcAddress = useBitcoinAddressForAccount(network.family === 'bitcoin' ? account.index : undefined);
+  const address = network.family === 'bitcoin' ? btcAddress : account.address;
   const bal = useQuery({
-    queryKey: ['native', adapter.network.id, account.address],
-    queryFn: () => adapter.getBalance(account.address),
+    queryKey: ['native', network.id, address],
+    enabled: !!address,
+    queryFn: () => adapter.getBalance(address!),
     staleTime: 15_000,
   });
 
@@ -93,7 +97,7 @@ function AccountRow({ account, active, onSelect }: { account: AccountMeta; activ
     <div className={`relative flex items-center gap-3 rounded-xl px-3 py-3 ${active ? 'bg-primary-soft' : 'hover:bg-surface-hover'}`}>
       {active && <span className="absolute bottom-2 left-0 top-2 w-1 rounded-full bg-primary" />}
       <button type="button" onClick={onSelect} className="flex min-w-0 flex-1 items-center gap-3 text-left" aria-current={active || undefined}>
-        <Identicon address={account.address} size={36} />
+        <Identicon address={address ?? account.address} size={36} />
         <span className="min-w-0 flex-1">
           {editing ? (
             <input
@@ -116,10 +120,12 @@ function AccountRow({ account, active, onSelect }: { account: AccountMeta; activ
           ) : (
             <span className="block truncate font-medium">{account.name}</span>
           )}
-          <span className="block font-mono text-xs text-subtle">{shortAddress(account.address)}</span>
+          <span className="block font-mono text-xs text-subtle">
+            {address ? shortAddress(address, network.family === 'bitcoin' ? 8 : 6, 6) : '—'}
+          </span>
         </span>
         <span className="tabular text-right text-sm text-muted">
-          {bal.data !== undefined ? `${formatDisplay(bal.data, 18, 4)} ${adapter.network.nativeCurrency.symbol}` : <span className="skeleton inline-block h-4 w-16 rounded" />}
+          {bal.data !== undefined ? `${formatDisplay(bal.data, network.nativeCurrency.decimals, 4)} ${network.nativeCurrency.symbol}` : <span className="skeleton inline-block h-4 w-16 rounded" />}
         </span>
       </button>
       {active && <Check size={18} className="shrink-0 text-primary" />}

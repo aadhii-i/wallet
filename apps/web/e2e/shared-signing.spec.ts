@@ -131,7 +131,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   await expect(form.getByText(`Sends from smart account ${address}`, { exact: false })).toBeVisible();
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('0.02');
-  await form.getByLabel('Network', { exact: true }).selectOption('31337');
+  await form.getByLabel('Network', { exact: true }).selectOption('11155111');
   await form.getByRole('button', { name: 'Review proposal' }).click();
   await adhil.getByRole('button', { name: 'Submit proposal' }).click();
   await expect(card(adhil).getByLabel('Proposal status')).toHaveText('Awaiting approvals');
@@ -171,7 +171,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   await expect(receiptCard.getByText('0.02 ETH', { exact: true })).toBeVisible();
   await expect(receiptCard.getByText('2-of-3', { exact: true })).toBeVisible();
   const [download] = await Promise.all([adhil.waitForEvent('download'), receiptCard.getByRole('button', { name: 'Download PDF receipt' }).click()]);
-  expect(download.suggestedFilename()).toMatch(/^qd-wallet-receipt-31337-0x[0-9a-f]{10}\.pdf$/);
+  expect(download.suggestedFilename()).toMatch(/^qd-wallet-receipt-11155111-0x[0-9a-f]{10}\.pdf$/);
   const pdf = await (await download.createReadStream()).toArray();
   const pdfText = Buffer.concat(pdf as Buffer[]).toString('latin1');
   expect(pdfText.startsWith('%PDF-1.4')).toBe(true);
@@ -190,7 +190,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   await expect(form.getByLabel('Nonce')).toHaveValue('1', { timeout: 30_000 });
   await form.getByLabel('Recipient address').fill(p3Address);
   await form.getByLabel('Amount (ETH)').fill('0.01');
-  await form.getByLabel('Network', { exact: true }).selectOption('31337');
+  await form.getByLabel('Network', { exact: true }).selectOption('11155111');
   await form.getByRole('button', { name: 'Review proposal' }).click();
   await adhil.getByRole('button', { name: 'Submit proposal' }).click();
   const toP3 = (page: Page) => page.getByRole('article', { name: new RegExp(`^Proposal: 0\\.01 ETH to ${p3Address}$`, 'i') });
@@ -211,7 +211,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   const details = sentEntry.getByRole('region', { name: 'Transaction details' });
   await expect(details.getByLabel('Transaction hash', { exact: true })).toHaveText(p3Hash);
   const [historyPdf] = await Promise.all([adhil.waitForEvent('download'), details.getByRole('button', { name: 'Download PDF receipt' }).click()]);
-  expect(historyPdf.suggestedFilename()).toBe(`qd-wallet-receipt-31337-${p3Hash.slice(0, 12)}.pdf`);
+  expect(historyPdf.suggestedFilename()).toBe(`qd-wallet-receipt-11155111-${p3Hash.slice(0, 12)}.pdf`);
   expect(await balance(p3Address)).toBe(10_000_000_000_000_000n);
 
   // --- an over-budget proposal: every participant sees why it cannot execute; nothing is sent ---
@@ -219,7 +219,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   const relayerNonceBefore = await anvil<string>('eth_getTransactionCount', [RELAYER, 'latest']);
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('5');
-  await form.getByLabel('Network', { exact: true }).selectOption('31337');
+  await form.getByLabel('Network', { exact: true }).selectOption('11155111');
   await form.getByRole('button', { name: 'Review proposal' }).click();
   await adhil.getByRole('button', { name: 'Submit proposal' }).click();
   const big = (page: Page) => page.getByRole('article', { name: new RegExp(`^Proposal: 5 ETH to ${RECIPIENT}$`, 'i') });
@@ -267,7 +267,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   // --- Personal Home → Activity (recipient side): P3 never took part in that proposal; the transfer is found on chain ---
   await p3.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home', exact: true }).filter({ visible: true }).first().click();
   await p3.getByRole('button', { name: /^Network: .*Change network$/ }).click();
-  await p3.getByRole('option', { name: /Localhost \(Anvil\)/ }).click();
+  await p3.getByRole('option', { name: /Sepolia/ }).click();
   await p3.getByRole('tab', { name: 'Activity' }).click();
   const received = p3.getByRole('button', { name: /Received ETH/ }).first();
   await expect(received).toBeVisible({ timeout: 60_000 });

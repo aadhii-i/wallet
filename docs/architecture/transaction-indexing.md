@@ -71,7 +71,7 @@ Re-indexing inserts nothing that already exists, so a pass that crashed before s
 - RPC rate limits are retried with backoff. Only real range errors shrink the `eth_getLogs` window.
 
 **Persistence**
-- Postgres: migration `00007_chain_index.sql`.
+- Postgres: migration `00013_chain_index.sql`.
 - Development in-memory store: the `.data/dev-store.json` snapshot.
 
 ## Views

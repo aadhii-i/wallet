@@ -1,14 +1,13 @@
 # QD Wallet developer commands. Requires: pnpm (via corepack), Go 1.26+, Docker.
 PNPM := corepack pnpm@9.15.0
 API  := services/wallet-api
-# Anvil's public test account #1: pays gas to submit shared-wallet executions on
-# local Anvil only (the API refuses relayer keys in production).
-ANVIL_RELAYER_KEY := 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 
 # Server-side secrets (e.g. EVM_RPC_11155111) for `make api`. Gitignored.
 -include .env
 # Secrets reach the API through the environment, never on the echoed command
 # line (make prints recipes): only these .env values are exported.
+export ENABLE_SHARED_WALLETS
+export NEXT_PUBLIC_ENABLE_SHARED_WALLETS
 export EVM_RPC_11155111
 export RELAYER_PRIVATE_KEY_11155111
 export GAS_LOW_BALANCE_WEI_11155111
@@ -31,7 +30,7 @@ anvil:       ## Run Anvil on the host (no Docker)
 	anvil --port 8545 --chain-id 31337 --block-time 1
 
 api:         ## Run wallet-api on the host (in-memory store persisted to .data/, host Anvil, Sepolia from .env)
-	cd $(API) && CGO_ENABLED=0 APP_ENV=development STORE=memory STORE_SNAPSHOT=$(CURDIR)/.data/dev-store.json COOKIE_SECURE=false DEV_CREDENTIAL_RATE_BURST=200 ALLOWED_ORIGINS=http://localhost:3000 EVM_RPC_31337=anvil=http://127.0.0.1:8545 RELAYER_PRIVATE_KEY_31337=$(ANVIL_RELAYER_KEY) PRICE_PROVIDER=static go run ./cmd/wallet-api
+	cd $(API) && CGO_ENABLED=0 APP_ENV=development STORE=memory STORE_SNAPSHOT=$(CURDIR)/.data/dev-store.json COOKIE_SECURE=false DEV_CREDENTIAL_RATE_BURST=200 ALLOWED_ORIGINS=http://localhost:3000 EVM_RPC_31337=anvil=http://127.0.0.1:8545 PRICE_PROVIDER=static go run ./cmd/wallet-api
 
 web:         ## Run the web app in dev mode
 	$(PNPM) --filter @qd/web dev

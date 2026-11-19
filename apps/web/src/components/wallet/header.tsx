@@ -3,7 +3,7 @@ import { useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import { ChevronDown, Lock, MoreVertical, QrCode, Shield } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useNetwork } from '@/lib/hooks';
+import { useAccountAddress, useNetwork } from '@/lib/hooks';
 import { useSelectedAccount, useSession } from '@/lib/store';
 import { vault } from '@/lib/vault-client';
 import { Identicon, CopyButton, shortAddress } from '../ui/identity';
@@ -14,6 +14,7 @@ import { t } from '../ui/motion';
 
 export function WalletHeader() {
   const account = useSelectedAccount();
+  const address = useAccountAddress();
   const network = useNetwork();
   const [sheet, setSheet] = useState<'account' | 'network' | 'receive' | null>(null);
   const [menu, setMenu] = useState(false);
@@ -39,7 +40,7 @@ export function WalletHeader() {
           className="inline-flex h-9 min-w-0 items-center gap-2 rounded-full px-2 hover:bg-surface-hover"
           aria-label={`Account: ${account?.name}. Switch account`}
         >
-          {account && <Identicon address={account.address} size={22} />}
+          {address && <Identicon address={address} size={22} />}
           <AnimatePresence mode="wait" initial={false}>
             <motion.span key={account?.index} className="truncate text-[15px] font-semibold" initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={t.fast}>
               {account?.name ?? '—'}
@@ -47,10 +48,10 @@ export function WalletHeader() {
           </AnimatePresence>
           <ChevronDown size={16} className="shrink-0 text-subtle" />
         </button>
-        {account && (
+        {address && (
           <div className="-mt-0.5 flex items-center text-xs text-subtle">
-            <span className="font-mono">{shortAddress(account.address)}</span>
-            <CopyButton value={account.address} className="h-7 w-7" />
+            <span className="font-mono">{shortAddress(address, network.family === 'bitcoin' ? 8 : 6, 6)}</span>
+            <CopyButton value={address} className="h-7 w-7" />
           </div>
         )}
       </div>

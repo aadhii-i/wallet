@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 
@@ -31,8 +32,13 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm() != 0o600 {
-		t.Fatalf("snapshot file mode: %v %v", fi.Mode(), err)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Windows does not represent ACLs with POSIX permission bits.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
+		t.Fatalf("snapshot file mode: %v", fi.Mode())
 	}
 	// Unchanged content: same hash, no rewrite needed.
 	if h2, _ := s.Save(path, h1); h2 != h1 {

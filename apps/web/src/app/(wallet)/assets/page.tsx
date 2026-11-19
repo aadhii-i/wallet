@@ -2,12 +2,11 @@
 import { useRouter } from 'next/navigation';
 import { AssetList } from '@/components/wallet/asset-list';
 import { WalletHeader } from '@/components/wallet/header';
-import { useValuedHoldings } from '@/lib/hooks';
-import { useSelectedAccount } from '@/lib/store';
+import { useAccountAddress, useValuedHoldings } from '@/lib/hooks';
 
 export default function AssetsPage() {
-  const account = useSelectedAccount();
-  const { holdings, valued } = useValuedHoldings(account?.address);
+  const address = useAccountAddress();
+  const { holdings, valued } = useValuedHoldings(address);
   const router = useRouter();
   return (
     <>

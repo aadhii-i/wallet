@@ -41,7 +41,58 @@ export interface EvmNetwork extends NetworkBase {
   feeWarningNative: string;
 }
 
-export type Network = EvmNetwork;
+export type BitcoinChain = 'mainnet' | 'testnet4';
+export type BitcoinAddressType = 'p2wpkh' | 'p2tr';
+
+/**
+ * Bitcoin is a UTXO chain: no chain id, no nonce. Everything the adapter needs
+ * that is not part of `NetworkBase` lives under `bitcoin`.
+ */
+export interface BitcoinNetwork extends NetworkBase {
+  family: 'bitcoin';
+  bitcoin: {
+    chain: BitcoinChain;
+    /** BIP-44 coin type: 0 mainnet, 1 testnet. */
+    coinType: 0 | 1;
+    /** Bech32 human-readable part: `bc` or `tb`. */
+    bech32Hrp: 'bc' | 'tb';
+    defaultAddressType: BitcoinAddressType;
+    addressTypes: readonly BitcoinAddressType[];
+    blockTimeMs: number;
+    confirmationsForFinal: number;
+    /** Hard warning when the fee exceeds this many satoshis (decimal string). */
+    feeWarningSats: string;
+  };
+}
+
+export type HederaChain = 'mainnet' | 'testnet';
+
+/**
+ * Hedera Hashgraph network. No EVM chain id; accounts are identified by
+ * the Hedera Account ID format (shard.realm.num, e.g. 0.0.12345).
+ * Key type for HD wallets: secp256k1 on SLIP-44 coin type 3030.
+ */
+export interface HederaNetwork extends NetworkBase {
+  family: 'hedera';
+  hedera: {
+    chain: HederaChain;
+    /** SLIP-44 coin type for HBAR: 3030. */
+    coinType: 3030;
+    /** Mirror Node REST API base URL for this network (no trailing slash). */
+    mirrorNodeUrl: string;
+    /** Name passed to the Hedera SDK Client factory ('mainnet' | 'testnet'). */
+    networkName: 'mainnet' | 'testnet';
+    blockTimeMs: number;
+    confirmationsForFinal: number;
+    /**
+     * Hard fee warning threshold in tinybars (decimal string).
+     * 1 HBAR = 100_000_000 tinybars.
+     */
+    feeWarningTinybars: string;
+  };
+}
+
+export type Network = EvmNetwork | BitcoinNetwork | HederaNetwork;
 
 const etherscan = (base: string) => ({
   name: base.replace('https://', ''),
@@ -198,6 +249,95 @@ export const EVM_NETWORKS: readonly EvmNetwork[] = [
   },
 ];
 
+/**
+ * Bitcoin networks. `family: 'bitcoin'` distinguishes them from EVM entries;
+ * `Network` is the union of both registries.
+ */
+export const BITCOIN_NETWORKS: readonly BitcoinNetwork[] = [
+  {
+    id: 'btc-mainnet',
+    family: 'bitcoin',
+    name: 'Bitcoin',
+    shortName: 'Bitcoin',
+    kind: 'mainnet',
+    nativeCurrency: { symbol: 'BTC', name: 'Bitcoin', decimals: 8, priceRef: 'bitcoin' },
+    explorer: {
+      name: 'mempool.space',
+      txUrl: (h) => `https://mempool.space/tx/${h}`,
+      addressUrl: (a) => `https://mempool.space/address/${a}`,
+    },
+    accent: 'bitcoin',
+    bitcoin: {
+      chain: 'mainnet',
+      coinType: 0,
+      bech32Hrp: 'bc',
+      defaultAddressType: 'p2wpkh',
+      addressTypes: ['p2wpkh', 'p2tr'],
+      blockTimeMs: 600_000,
+      confirmationsForFinal: 6,
+      feeWarningSats: '100000',
+    },
+  },
+  {
+    id: 'btc-testnet4',
+    family: 'bitcoin',
+    name: 'Bitcoin Testnet4',
+    shortName: 'Testnet4',
+    kind: 'testnet',
+    nativeCurrency: { symbol: 'BTC', name: 'Testnet Bitcoin', decimals: 8, priceRef: 'bitcoin' },
+    explorer: {
+      name: 'mempool.space testnet4',
+      txUrl: (h) => `https://mempool.space/testnet4/tx/${h}`,
+      addressUrl: (a) => `https://mempool.space/testnet4/address/${a}`,
+    },
+    accent: 'testnet',
+    faucetUrl: 'https://mempool.space/testnet4/faucet',
+    bitcoin: {
+      chain: 'testnet4',
+      coinType: 1,
+      bech32Hrp: 'tb',
+      defaultAddressType: 'p2wpkh',
+      addressTypes: ['p2wpkh', 'p2tr'],
+      blockTimeMs: 600_000,
+      confirmationsForFinal: 3,
+      feeWarningSats: '50000',
+    },
+  },
+];
+
+export const HEDERA_NETWORKS: readonly HederaNetwork[] = [
+  {
+    id: 'hedera-testnet',
+    family: 'hedera',
+    name: 'Hedera Testnet',
+    shortName: 'Hedera',
+    kind: 'testnet',
+    nativeCurrency: {
+      symbol: 'HBAR',
+      name: 'HBAR',
+      decimals: 8,
+      priceRef: 'hedera-hashgraph',
+    },
+    explorer: {
+      name: 'HashScan',
+      txUrl: (h) => `https://hashscan.io/testnet/transaction/${h}`,
+      addressUrl: (a) => `https://hashscan.io/testnet/account/${a}`,
+    },
+    accent: 'testnet',
+    faucetUrl: 'https://portal.hedera.com',
+    hedera: {
+      chain: 'testnet',
+      coinType: 3030,
+      mirrorNodeUrl: 'https://testnet.mirrornode.hedera.com/api/v1',
+      networkName: 'testnet',
+      blockTimeMs: 3_000,
+      confirmationsForFinal: 1,
+      // 1 HBAR = 100_000_000 tinybars; warn above 1 HBAR on testnet.
+      feeWarningTinybars: '100000000',
+    },
+  },
+];
+
 export interface NetworkRegistry {
   all(): readonly Network[];
   byId(id: string): Network | undefined;
@@ -210,11 +350,14 @@ export interface NetworkRegistry {
  * from production builds (spec §27.2).
  */
 export function createNetworkRegistry(opts: { includeLocal: boolean; enabledIds?: readonly string[] }): NetworkRegistry {
-  const list = EVM_NETWORKS.filter(
+  const list: readonly Network[] = [...EVM_NETWORKS, ...BITCOIN_NETWORKS, ...HEDERA_NETWORKS].filter(
     (n) => (opts.includeLocal || n.kind !== 'local') && (!opts.enabledIds || opts.enabledIds.includes(n.id)),
   );
-  const byId = new Map(list.map((n) => [n.id, n]));
-  const byChain = new Map(list.map((n) => [n.chainId, n]));
+  const byId = new Map<string, Network>(list.map((n) => [n.id, n]));
+  const byChain = new Map<number, EvmNetwork>();
+  for (const n of list) {
+    if (n.family === 'evm') byChain.set(n.chainId, n);
+  }
   return {
     all: () => list,
     byId: (id) => byId.get(id),
