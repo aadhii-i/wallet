@@ -96,6 +96,11 @@ type Config struct {
 	// on-chain Raccoon verifier is research-grade (ADR 0019).
 	RelayerKeys         map[int64]string
 	EnableSharedWallets bool
+	// RPCBackgroundRPS (RPC_BACKGROUND_RPS) paces background RPC work
+	// (chain indexing) per provider on public chains, so it
+	// cannot exhaust the provider quota users and the relayer depend on.
+	// 0 disables the limit. Local chains (31337) are never limited.
+	RPCBackgroundRPS int64
 	// GasLowBalanceWei (GAS_LOW_BALANCE_WEI_<chainId>, decimal wei) overrides
 	// when a chain's gas service account is reported as low. Unset: enough to
 	// set up one more wallet key and execute once at current gas prices.
@@ -172,6 +177,7 @@ func Load() (*Config, error) {
 		Store:               StoreKind(getenv("STORE", string(StoreMemory))),
 		StoreSnapshot:       os.Getenv("STORE_SNAPSHOT"),
 		EnableSharedWallets: getbool("ENABLE_SHARED_WALLETS", false),
+		RPCBackgroundRPS:    getint("RPC_BACKGROUND_RPS", 3),
 		DatabaseURL:         getenv("DATABASE_URL", ""),
 		MigrateOnStart:      getbool("MIGRATE_ON_START", false),
 		DevCredentialBurst:  getNonnegativeInt("DEV_CREDENTIAL_RATE_BURST", 0),

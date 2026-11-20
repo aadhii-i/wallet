@@ -23,7 +23,7 @@ export GAS_LOW_BALANCE_WEI_11155111
 # Further server-side settings, exported only when .env sets them: the rollup
 # testnets (Base Sepolia, Arbitrum Sepolia, Polygon Amoy), Bitcoin and Hedera.
 SERVER_ENV := $(foreach c,84532 421614 80002,EVM_RPC_$(c) RELAYER_PRIVATE_KEY_$(c) GAS_LOW_BALANCE_WEI_$(c) HISTORY_PROVIDER_$(c)) \
-	HISTORY_PROVIDER_11155111 BTC_ESPLORA_URL BTC_NETWORK BTC_FEE_FLOOR_SAT_VB BTC_MAX_FEE_SAT_VB HEDERA_MIRROR_URL
+	HISTORY_PROVIDER_11155111 BTC_ESPLORA_URL BTC_NETWORK BTC_FEE_FLOOR_SAT_VB BTC_MAX_FEE_SAT_VB HEDERA_MIRROR_URL RPC_BACKGROUND_RPS
 $(foreach v,$(SERVER_ENV),$(if $(filter-out undefined,$(origin $(v))),$(eval export $(v))))
 
 .PHONY: help install up down anvil api web build test test-ts test-go e2e e2e-shared lint typecheck fund contracts relayer-status

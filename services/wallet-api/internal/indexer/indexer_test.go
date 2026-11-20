@@ -841,3 +841,27 @@ func TestSharedAccountReceiveThenSendSameAmountWithoutLogs(t *testing.T) {
 		t.Fatalf("found through logs, not bisection: %d log queries", w.chain.calls["eth_getLogs"])
 	}
 }
+
+// Background rounds advance every address one step at a time: one address's
+// long catch-up never keeps the others (and their fresh activity) waiting.
+func TestBackgroundRoundsTakeTurns(t *testing.T) {
+	w := newWorld(t)
+	alice, bob := w.personal(addr(0xa1)), w.personal(addr(0xb2))
+	w.chain.head = 10
+	w.ix.TickChain(ctx, chainID) // both indexed to 10
+	w.chain.head = 10_010        // a long outage
+	w.ix.StepBlocks = 1_000
+	w.ix.TickChain(ctx, chainID)
+	for _, a := range []string{alice, bob} {
+		if c, _ := w.st.ChainIndex().GetCursor(ctx, chainID, a); c.ScannedThrough != 1_010 {
+			t.Fatalf("%s after one round: scanned through %d, want 1010", a, c.ScannedThrough)
+		}
+	}
+	// An on-demand Sync still goes as far as MaxRange in one call.
+	if err := w.ix.Sync(ctx, chainID, []string{alice}, false); err != nil {
+		t.Fatal(err)
+	}
+	if c, _ := w.st.ChainIndex().GetCursor(ctx, chainID, alice); c.ScannedThrough != 10_010 {
+		t.Fatalf("sync: %d", c.ScannedThrough)
+	}
+}

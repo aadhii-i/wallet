@@ -138,6 +138,11 @@ func run() error {
 			rpcUpstreams = append(rpcUpstreams, rpc.Upstream{Name: u.Name, URL: u.URL})
 		}
 		pools[chainID] = rpc.NewPool(chainID, rpcUpstreams, logger)
+		if chainID != 31337 {
+			// Background work (chain indexing) must leave the provider
+			// quota to users and the relayer.
+			pools[chainID].SetBackgroundRate(float64(cfg.RPCBackgroundRPS))
+		}
 	}
 	registry := evm.NewRegistry(upstreamCounts)
 	rpcManager := rpc.NewManager(registry, pools)
@@ -281,6 +286,8 @@ func run() error {
 	sharedHandlers.SetRelayer(relayer)
 	if cfg.EnableSharedWallets {
 		go relayer.Run(healthCtx)
+		// The gas monitor watches one address with a small call budget: it stays
+		// in the normal lane so Gas Service history is not queued behind indexing.
 		go sharedwallet.NewGasMonitor(relayer).Run(healthCtx)
 	}
 	relayerStatus := newRelayerStatusHandler(relayer)
@@ -298,7 +305,10 @@ func run() error {
 	// Chain index: persistent personal Activity and shared Wallet History from receipts (read-only).
 	chainIndex := indexer.New(st, func(chainID int64) (indexer.Caller, bool) {
 		p, ok := pools[chainID]
-		return p, ok
+		if !ok {
+			return nil, false
+		}
+		return rpc.BackgroundCaller(p), true
 	}, logger)
 	for chainID := range pools {
 		chainIndex.ChainIDs = append(chainIndex.ChainIDs, chainID)

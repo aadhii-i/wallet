@@ -58,6 +58,12 @@ type Provider struct {
 	// serve Mainnet balances labelled as Sepolia.
 	chainVerified bool
 	wrongChain    bool
+
+	// bgLimiter paces background calls (nil: unlimited). cooldownUntil is
+	// set by an HTTP 429; cooldownStep is the current cooldown length.
+	bgLimiter     *rate.Limiter
+	cooldownUntil time.Time
+	cooldownStep  time.Duration
 }
 
 func newProvider(name, url string, logger *slog.Logger) *Provider {
@@ -141,6 +147,7 @@ func (p *Provider) recordSuccess() {
 	defer p.mu.Unlock()
 	p.consecutiveFails = 0
 	p.state = circuitClosed
+	p.cooldownStep = 0
 }
 
 func (p *Provider) recordFailure() {
@@ -232,6 +239,19 @@ func (p *Provider) call(ctx context.Context, chainIDLabel string, req rpcEnvelop
 		return nil, fmt.Errorf("rpc: provider %s: %w", p.Name, cause)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		p.noteRateLimited(retryAfter)
+		metrics.RPCUpstreamErrors.WithLabelValues(chainIDLabel, p.Name, req.Method, "rate_limited").Inc()
+		p.logger.Warn("rpc upstream rate limited",
+			slog.String("provider", p.Name),
+			slog.String("chain_id", chainIDLabel),
+			slog.String("method", req.Method),
+			slog.Int("status", resp.StatusCode),
+			slog.Duration("cooldown", p.coolingFor()),
+		)
+		return nil, &RateLimitedError{Provider: p.Name, RetryAfter: retryAfter}
+	}
 	if resp.StatusCode >= 300 {
 		metrics.RPCUpstreamErrors.WithLabelValues(chainIDLabel, p.Name, req.Method, "http_status").Inc()
 		p.logger.Error("rpc upstream returned non-2xx",
@@ -254,6 +274,7 @@ func (p *Provider) call(ctx context.Context, chainIDLabel string, req rpcEnvelop
 type Pool struct {
 	chainID   int64
 	providers []*Provider
+	reads     readShare
 }
 
 // NewPool builds a provider pool for one chain. logger may be nil, in which
@@ -276,14 +297,21 @@ type Upstream struct {
 func (p *Pool) chainLabel() string { return strconv.FormatInt(p.chainID, 10) }
 
 // candidates returns providers in priority order, skipping open-circuit
-// ones, for a read method's failover attempts.
+// ones, for a read method's failover attempts. Providers cooling down after
+// an HTTP 429 come last.
 func (p *Pool) candidates() []*Provider {
 	out := make([]*Provider, 0, len(p.providers))
+	var cooling []*Provider
 	for _, prov := range p.providers {
 		if prov.allowRequest() {
-			out = append(out, prov)
+			if prov.coolingFor() > 0 {
+				cooling = append(cooling, prov)
+			} else {
+				out = append(out, prov)
+			}
 		}
 	}
+	out = append(out, cooling...)
 	if len(out) == 0 {
 		// Every circuit is open: still try the providers so the system
 		// fails loudly rather than refusing all traffic silently -- but
