@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -221,24 +222,33 @@ func run() error {
 	sharedHandlers := sharedwallet.NewHandlers(sharedwallet.NewService(st))
 
 	// --- Shared-wallet relayer: submits verified Raccoon signatures to QdAccount.
+	// Relayer keys are used only when shared wallets are enabled, and only for
+	// test networks: a key configured for any other chain is ignored.
 	sharedKeys := make(map[int64]string)
-	if key := cfg.RelayerKeys[sharedwallet.SepoliaChainID]; cfg.EnableSharedWallets && key != "" {
-		sharedKeys[sharedwallet.SepoliaChainID] = key
+	for chainID, key := range cfg.RelayerKeys {
+		if cfg.EnableSharedWallets && key != "" && sharedwallet.ExecutionChainAllowed(chainID) {
+			sharedKeys[chainID] = key
+		} else if key != "" {
+			logger.Warn("shared-wallet relayer key ignored", "chain", chainID, "sharedWalletsEnabled", cfg.EnableSharedWallets)
+		}
 	}
 	relayerKeys, err := sharedwallet.ParseRelayerKeys(sharedKeys)
 	if err != nil {
 		return err
 	}
 	relayer := sharedwallet.NewRelayer(st, func(chainID int64) (sharedwallet.ChainCaller, bool) {
-		if chainID != sharedwallet.SepoliaChainID {
+		if !sharedwallet.ExecutionChainAllowed(chainID) {
 			return nil, false
 		}
 		p, ok := pools[chainID]
 		return p, ok
 	}, relayerKeys, logger)
-	if _, ok := pools[sharedwallet.SepoliaChainID]; ok {
-		relayer.ChainIDs = []int64{sharedwallet.SepoliaChainID}
+	for chainID := range pools {
+		if sharedwallet.ExecutionChainAllowed(chainID) {
+			relayer.ChainIDs = append(relayer.ChainIDs, chainID)
+		}
 	}
+	slices.Sort(relayer.ChainIDs)
 	for chainID := range relayerKeys {
 		addr, _ := relayer.RelayerAddress(chainID)
 		logger.Warn("shared-wallet relayer enabled (development)", "chain", chainID, "relayer", addr.Hex())
