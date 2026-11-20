@@ -15,6 +15,17 @@ import (
 
 type Env string
 
+// KeyManagerKind selects where signing and encryption keys come from.
+type KeyManagerKind string
+
+const (
+	// KeyManagerLocalDev generates keys into DEV_KEY_DIR (development only).
+	KeyManagerLocalDev KeyManagerKind = "localdev"
+	// KeyManagerEnv loads keys from JWT_SIGNING_KEY / KEY_ENCRYPTION_KEY
+	// (deployment secrets) and never generates any.
+	KeyManagerEnv KeyManagerKind = "env"
+)
+
 const (
 	EnvDevelopment Env = "development"
 	EnvProduction  Env = "production"
@@ -84,6 +95,15 @@ type Config struct {
 	CookieSecure bool
 
 	DevKeyDir string
+	// KeyManager (KEY_MANAGER): "env" in production (the default there),
+	// "localdev" by default elsewhere.
+	KeyManager KeyManagerKind
+	// JWTSigningKey (JWT_SIGNING_KEY, secret): P-256 private key PEM (or
+	// base64 of it) that signs access tokens. Required with KEY_MANAGER=env.
+	JWTSigningKey string
+	// KeyEncryptionKey (KEY_ENCRYPTION_KEY, secret, optional): base64 of 32
+	// random bytes for the key manager's Encrypt/Decrypt.
+	KeyEncryptionKey string
 
 	CSRFKey   []byte
 	IPHashKey []byte
@@ -194,9 +214,13 @@ func Load() (*Config, error) {
 		HederaMirrorURL:     getenv("HEDERA_MIRROR_URL", ""),
 		OTLPEndpoint:        getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
-	if cfg.AppEnv == EnvDevelopment {
-		// default local dev origin
+	defaultKM := KeyManagerLocalDev
+	if cfg.AppEnv == EnvProduction {
+		defaultKM = KeyManagerEnv
 	}
+	cfg.KeyManager = KeyManagerKind(getenv("KEY_MANAGER", string(defaultKM)))
+	cfg.JWTSigningKey = os.Getenv("JWT_SIGNING_KEY")
+	cfg.KeyEncryptionKey = os.Getenv("KEY_ENCRYPTION_KEY")
 	origins := getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 	for _, o := range strings.Split(origins, ",") {
 		o = strings.TrimSpace(o)
@@ -305,7 +329,19 @@ func parseUpstreams(val string) []RPCUpstream {
 // after Load in main(); tests may construct Config literals and skip it.
 func (c *Config) Validate() error {
 	var errs []string
+	switch c.KeyManager {
+	case KeyManagerLocalDev:
+	case KeyManagerEnv:
+		if strings.TrimSpace(c.JWTSigningKey) == "" {
+			errs = append(errs, "JWT_SIGNING_KEY is required when KEY_MANAGER=env")
+		}
+	default:
+		errs = append(errs, `KEY_MANAGER must be "env" or "localdev"`)
+	}
 	if c.AppEnv == EnvProduction {
+		if c.KeyManager == KeyManagerLocalDev {
+			errs = append(errs, "KEY_MANAGER=localdev is refused in production (keys must come from JWT_SIGNING_KEY)")
+		}
 		if c.Store == StoreMemory {
 			errs = append(errs, "STORE=memory is refused when APP_ENV=production")
 		}

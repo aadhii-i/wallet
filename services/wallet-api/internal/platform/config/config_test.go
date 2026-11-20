@@ -32,3 +32,71 @@ func TestDevCredentialBurstDefaultsOff(t *testing.T) {
 		t.Fatalf("negative accepted: %d", cfg.DevCredentialBurst)
 	}
 }
+
+// prodEnv sets a production configuration that is complete except for what
+// a test changes.
+func prodEnv(t *testing.T) {
+	t.Helper()
+	for k, v := range map[string]string{
+		"APP_ENV": "production", "STORE": "postgres", "DATABASE_URL": "postgres://db/x",
+		"CSRF_KEY": strings.Repeat("c", 32), "IP_HASH_KEY": strings.Repeat("i", 32),
+		"JWT_SIGNING_KEY": "set (parsed by the key manager at startup)",
+		"KEY_MANAGER":     "", "DEV_CREDENTIAL_RATE_BURST": "", "BTC_ESPLORA_URL": "", "BTC_NETWORK": "",
+	} {
+		t.Setenv(k, v)
+	}
+}
+
+func TestKeyManagerDefaultsByEnvironment(t *testing.T) {
+	prodEnv(t)
+	cfg, _ := Load()
+	if cfg.KeyManager != KeyManagerEnv {
+		t.Fatalf("production default %q, want env", cfg.KeyManager)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("complete production config refused: %v", err)
+	}
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("JWT_SIGNING_KEY", "")
+	if cfg, _ = Load(); cfg.KeyManager != KeyManagerLocalDev {
+		t.Fatalf("development default %q, want localdev", cfg.KeyManager)
+	}
+	// Development may opt in to the env key manager (same keys as production).
+	t.Setenv("KEY_MANAGER", "env")
+	t.Setenv("JWT_SIGNING_KEY", "x")
+	if cfg, _ = Load(); cfg.KeyManager != KeyManagerEnv || cfg.Validate() != nil {
+		t.Fatalf("development with KEY_MANAGER=env: %q %v", cfg.KeyManager, cfg.Validate())
+	}
+}
+
+func TestProductionRefusesLocalDevKeysAndMissingSigningKey(t *testing.T) {
+	prodEnv(t)
+	t.Setenv("KEY_MANAGER", "localdev")
+	cfg, _ := Load()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEY_MANAGER=localdev") {
+		t.Fatalf("production accepted localdev keys: %v", err)
+	}
+	prodEnv(t)
+	t.Setenv("JWT_SIGNING_KEY", "")
+	cfg, _ = Load()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "JWT_SIGNING_KEY is required") {
+		t.Fatalf("production started without a signing key: %v", err)
+	}
+	t.Setenv("KEY_MANAGER", "kms")
+	t.Setenv("JWT_SIGNING_KEY", "x")
+	cfg, _ = Load()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "KEY_MANAGER") {
+		t.Fatalf("unknown key manager accepted: %v", err)
+	}
+}
+
+// Validation errors name variables, never their values.
+func TestValidationErrorsDoNotEchoSecrets(t *testing.T) {
+	prodEnv(t)
+	t.Setenv("KEY_MANAGER", "localdev")
+	t.Setenv("JWT_SIGNING_KEY", "SUPER-SECRET-VALUE")
+	cfg, _ := Load()
+	if err := cfg.Validate(); err == nil || strings.Contains(err.Error(), "SUPER-SECRET-VALUE") {
+		t.Fatalf("%v", err)
+	}
+}

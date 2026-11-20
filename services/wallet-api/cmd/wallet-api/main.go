@@ -75,9 +75,23 @@ func run() error {
 	isProduction := cfg.AppEnv == config.EnvProduction
 
 	// --- KeyManager (§13.3) -------------------------------------------------
-	km, err := security.NewLocalDevKeyManager(cfg.DevKeyDir, isProduction)
-	if err != nil {
-		return fmt.Errorf("key manager: %w", err)
+	var km security.KeyManager
+	switch cfg.KeyManager {
+	case config.KeyManagerEnv:
+		envKM, err := security.NewEnvKeyManager(security.EnvKeys{SigningKey: cfg.JWTSigningKey, EncryptionKey: cfg.KeyEncryptionKey})
+		if err != nil {
+			return fmt.Errorf("key manager: %w", err)
+		}
+		// Public fingerprint only: confirms which key this instance runs with.
+		logger.Info("key manager: deployment keys loaded", "kind", "env",
+			"signingKeyFingerprint", envKM.Fingerprint(), "encryptionKeyConfigured", envKM.HasEncryptionKey())
+		km = envKM
+	default:
+		devKM, err := security.NewLocalDevKeyManager(cfg.DevKeyDir, isProduction)
+		if err != nil {
+			return fmt.Errorf("key manager: %w", err)
+		}
+		km = devKM
 	}
 
 	csrfKey, err := loadOrGenerateKey(cfg, "csrf.key", cfg.CSRFKey)
