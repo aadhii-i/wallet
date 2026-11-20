@@ -89,10 +89,15 @@ var heavyClientMethods = map[string]struct{}{
 
 // shouldCountAsProviderFailure decides whether err, encountered while
 // calling method, should be recorded against the provider's circuit
-// breaker. Only a context-deadline timeout on a heavy, client-parameterized
-// method is excluded; everything else (connection errors, non-2xx, decode
-// failures, timeouts on other methods) counts as before.
+// breaker. Excluded: the client cancelling its own request (it navigated
+// away or closed the tab, which says nothing about the upstream), and a
+// context-deadline timeout on a heavy, client-parameterized method.
+// Everything else (connection errors, non-2xx, decode failures, timeouts on
+// other methods) counts as before.
 func shouldCountAsProviderFailure(err error, method string) bool {
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
 	if _, heavy := heavyClientMethods[method]; heavy && errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}

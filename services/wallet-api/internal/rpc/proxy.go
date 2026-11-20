@@ -266,6 +266,9 @@ func (h *Handler) forwardRead(ctx context.Context, pool *Pool, req rpcEnvelope) 
 			if shouldCountAsProviderFailure(err, req.Method) {
 				prov.recordFailure()
 			}
+			if ctx.Err() != nil {
+				break // the client is gone: no failover on its behalf
+			}
 			if isReadMethod(req.Method) {
 				continue
 			}
@@ -313,7 +316,9 @@ func (h *Handler) sendRawTransaction(ctx context.Context, pool *Pool, req rpcEnv
 		resp.ID = req.ID
 		return *resp
 	}
-	primary.recordFailure()
+	if err == nil || shouldCountAsProviderFailure(err, req.Method) {
+		primary.recordFailure()
+	}
 
 	// Timeout/failure: check other providers for the tx before resending.
 	for _, prov := range providers[1:] {
@@ -329,7 +334,9 @@ func (h *Handler) sendRawTransaction(ctx context.Context, pool *Pool, req rpcEnv
 	for _, prov := range providers[1:] {
 		resp, err := prov.call(ctx, pool.chainLabel(), req, timeout)
 		if err != nil || (resp != nil && resp.Error != nil) {
-			prov.recordFailure()
+			if err == nil || shouldCountAsProviderFailure(err, req.Method) {
+				prov.recordFailure()
+			}
 			continue
 		}
 		prov.recordSuccess()
