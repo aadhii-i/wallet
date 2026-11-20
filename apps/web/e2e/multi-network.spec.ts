@@ -17,6 +17,12 @@ const PASSWORD = 'Correct-Horse-42';
 
 const SELECTABLE = ['Ethereum Sepolia', 'Base Sepolia', 'Arbitrum Sepolia', 'Polygon Amoy', 'Localhost (Anvil)'];
 const NEW_TESTNETS = ['Base Sepolia', 'Arbitrum Sepolia', 'Polygon Amoy'];
+/**
+ * Non-EVM networks are always listed (they use dedicated endpoints, not the
+ * EVM-only `GET /v1/networks`; see lib/network-filter.ts). Full accessible-name
+ * prefixes, so `Bitcoin BTC` does not also match `Bitcoin Testnet4 BTC`.
+ */
+const NON_EVM = ['Bitcoin BTC', 'Bitcoin Testnet4 BTC', 'Hedera Testnet HBAR'];
 
 /**
  * An option's accessible name is "<chain name> <symbol> · no real value" — the
@@ -42,9 +48,12 @@ test('offers exactly the proxied chains and reads a live block from each new tes
   await page.getByRole('button', { name: /Network: / }).click();
   // The count is the other half of the assertion: every proxied chain is listed
   // and nothing else is, so a mainnet without an upstream cannot leak back in.
-  await expect(page.getByRole('option')).toHaveCount(SELECTABLE.length);
+  await expect(page.getByRole('option')).toHaveCount(SELECTABLE.length + NON_EVM.length);
   for (const name of SELECTABLE) {
     await expect(optionFor(page, name)).toBeVisible();
+  }
+  for (const name of NON_EVM) {
+    await expect(page.getByRole('option', { name: new RegExp(`^${name}`) })).toBeVisible();
   }
   // Close the sheet: while it is open the page behind is inert, so the header
   // trigger is not in the accessibility tree and cannot be clicked again.

@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { mnemonicToAccount } from 'viem/accounts';
 
 const ANVIL = process.env.ANVIL_RPC_URL ?? 'http://127.0.0.1:8545';
 const ANVIL_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -60,7 +61,8 @@ async function unlock(page: Page) {
   await expect(page).toHaveURL(/\/home/, { timeout: 20_000 });
 }
 
-const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`;
+// Header and account sheet show 6 leading and 6 trailing characters of an EVM address.
+const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-6)}`;
 
 test.describe('onboarding → receive → send', () => {
   test('creates a wallet, verifies backup, receives and sends ETH on Anvil', async ({ page }) => {
@@ -183,20 +185,30 @@ test.describe('import & unlock', () => {
     await expect(header.getByText(short(ANVIL_ACCOUNT_0))).toBeVisible();
     await expect(page.getByRole('button', { name: /^Network: Ethereum Sepolia/ })).toBeVisible();
 
-    // Add account derives index 1 of the same phrase and selects it; a double click adds one account only.
+    // Discovery restores every index of the phrase that has history on Sepolia. This is the public
+    // Anvil phrase, used by many people on Sepolia, so the set varies between runs: read what was
+    // restored instead of assuming only index 0.
+    const restored = await page.evaluate(() =>
+      (JSON.parse(localStorage.getItem('qd-meta')!).state.accounts as { index: number }[]).map((a) => a.index),
+    );
+    expect(restored).toContain(0);
+    const next = Math.max(...restored) + 1; // wallet-core nextAccountIndex
+    const nextAddress = mnemonicToAccount(ANVIL_MNEMONIC, { addressIndex: next }).address;
+
+    // Add account derives the next index of the same phrase and selects it; a double click adds one account only.
     await page.getByRole('button', { name: /Account: Account 1/ }).click();
     await page.getByRole('button', { name: 'Add account', exact: true }).dblclick();
-    await expect(page.getByText('Account 2 created')).toBeVisible();
+    await expect(page.getByText(`Account ${next + 1} created`)).toBeVisible();
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('button', { name: /Account: Account 2/ })).toBeVisible();
-    await expect(header.getByText(short(RECIPIENT))).toBeVisible();
-    await page.getByRole('button', { name: /Account: Account 2/ }).click();
+    await expect(page.getByRole('button', { name: new RegExp(`Account: Account ${next + 1}\\.`) })).toBeVisible();
+    await expect(header.getByText(short(nextAddress))).toBeVisible();
+    await page.getByRole('button', { name: new RegExp(`Account: Account ${next + 1}\\.`) }).click();
     const accounts = page.getByRole('dialog', { name: 'Accounts' });
-    await expect(accounts.getByRole('listitem')).toHaveCount(2);
+    await expect(accounts.getByRole('listitem')).toHaveCount(restored.length + 1);
 
     // Switching updates the header and account details.
-    await accounts.getByRole('button', { name: /Account 1/ }).first().click();
-    await expect(page.getByRole('button', { name: /Account: Account 1/ })).toBeVisible();
+    await accounts.getByRole('button', { name: /^Account 1 / }).first().click();
+    await expect(page.getByRole('button', { name: /Account: Account 1\./ })).toBeVisible();
     await page.getByRole('button', { name: 'Wallet menu' }).click();
     await page.getByRole('menuitem', { name: 'Account details' }).click();
     await expect(page.getByText("m/44'/60'/0'/0/0")).toBeVisible();
@@ -205,14 +217,27 @@ test.describe('import & unlock', () => {
     // A reload locks the wallet; accounts persist and are re-verified against the vault on unlock.
     await page.reload();
     await unlock(page);
-    await page.getByRole('button', { name: /Account: Account 1/ }).click();
-    await expect(page.getByRole('dialog', { name: 'Accounts' }).getByRole('listitem')).toHaveCount(2);
-    await expect(page.getByRole('dialog', { name: 'Accounts' }).getByText(short(RECIPIENT))).toBeVisible();
+    await page.getByRole('button', { name: /Account: Account 1\./ }).click();
+    await expect(page.getByRole('dialog', { name: 'Accounts' }).getByRole('listitem')).toHaveCount(restored.length + 1);
+    await expect(page.getByRole('dialog', { name: 'Accounts' }).getByText(short(nextAddress))).toBeVisible();
   });
 
   test('replaces stored account metadata that does not match the vault', async ({ page }) => {
     await restore(page, ANVIL_MNEMONIC);
     await expect(page.locator('header').getByText(short(ANVIL_ACCOUNT_0))).toBeVisible();
+    // Background sync caches each account's Bitcoin addresses (mainnet + Testnet4) in the same
+    // persisted metadata; each write saves the in-memory account list too. Let it finish so it
+    // cannot overwrite the corruption below.
+    await expect
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const s = JSON.parse(localStorage.getItem('qd-meta')!).state as { accounts: unknown[]; btcAddresses?: Record<string, string> };
+            return Object.keys(s.btcAddresses ?? {}).length >= 2 * s.accounts.length;
+          }),
+        { timeout: 60_000 },
+      )
+      .toBe(true);
     // Corrupt the non-secret metadata: claim account 0 is some other address.
     await page.evaluate(() => {
       const raw = JSON.parse(localStorage.getItem('qd-meta')!);

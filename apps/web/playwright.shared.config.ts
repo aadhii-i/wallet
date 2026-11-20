@@ -35,7 +35,12 @@ export default defineConfig({
   projects: [{ name: 'desktop', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: `${ANVIL_BIN} --port ${ANVIL_PORT} --chain-id 11155111 --silent`,
+      // Sepolia's chain ID makes Anvil apply Sepolia's hardfork (Amsterdam), where one
+      // matrix-expansion transaction costs ~33M gas. Anvil's default 30M block gas limit
+      // cannot hold it (real Sepolia's is far higher), so give it a Sepolia-sized block.
+      // --block-time: like Sepolia, blocks keep coming. The API scans non-local chains 2 blocks
+      // behind the head, so an on-demand Anvil would never show the newest transaction.
+      command: `${ANVIL_BIN} --port ${ANVIL_PORT} --chain-id 11155111 --gas-limit 60000000 --block-time 1 --silent`,
       port: Number(ANVIL_PORT),
       reuseExistingServer: false,
     },

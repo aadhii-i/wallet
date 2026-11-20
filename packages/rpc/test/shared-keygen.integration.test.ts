@@ -175,8 +175,9 @@ describe.skipIf(!API)('shared-wallet key generation over HTTP (5 independent use
     });
     for (const i of [4, 1, 2]) await devices[i]!.api.voteOnProposal(prop.id, 'approve');
     const approved = await owner.api.proposal(prop.id);
-    expect(approved.signing).toMatchObject({ status: 'awaiting_signing_session', signerPartyIndexes: [2, 3, 5] });
-    expect(approved.execution.status).toBe('unavailable');
+    // The key is ready, but no smart-account key is registered for this account yet.
+    expect(approved.signing).toMatchObject({ status: 'awaiting_account_key', signerPartyIndexes: [2, 3, 5] });
+    expect(approved.execution.status).toBe('not_started');
 
     // In-process only (stand-in for the future networked session): the shares
     // that arrived on separate devices sign the approved proposal digest.
