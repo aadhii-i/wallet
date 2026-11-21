@@ -9,7 +9,7 @@ The integrated source starts with the current `D:\wallet` working copy on `heder
 | Personal wallet | The EVM transaction and proof paths, Bitcoin SegWit and Taproot PSBT paths, and the Hedera transfer and account paths remain available through the multi-chain UI and API. |
 | Shared wallet | Includes membership, invitations, approvals, the trusted-dealer ceremony and HPKE share delivery, encrypted device shares, Threshold Raccoon rounds, QdAccount contracts and relayer, gas service, indexed wallet history and receipts. |
 | KeyWorker | Keeps HD and Bitcoin signer initialization and Hedera payload handling. Lock clears the confirmation registry, share-store key and in-flight signing sessions. Shared wallet commands use their own protocol and encrypted store. |
-| Configuration and API | Includes both Bitcoin and shared-wallet endpoints, provider configuration, the common OpenAPI specification, and a single regenerated pnpm lockfile. Shared-wallet proposal creation and relayer RPC are limited to Ethereum Sepolia. |
+| Configuration and API | Includes both Bitcoin and shared-wallet endpoints, provider configuration, the common OpenAPI specification, and a single regenerated pnpm lockfile. Shared-wallet proposal creation and relayer execution are limited to test networks: Ethereum Sepolia, Base Sepolia, Arbitrum Sepolia, Polygon Amoy and local Anvil. Every mainnet is rejected (see [the 2026-11-20 change](docs/changes/2026-11-20-restore-shared-wallets.md)). |
 | Database | Retains `00002_addresses_network_families.sql` and moves the six GitHub migrations from `00002–00007` to `00008–00013`. The Bitcoin design record moved to ADR 0020 to resolve a separate numbering collision. |
 
 ## Run and roll back

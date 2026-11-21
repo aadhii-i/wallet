@@ -13,6 +13,14 @@ import { expect, test } from '@playwright/test';
 const MNEMONIC = 'test test test test test test test test test test test junk';
 const PASSWORD = 'Correct-Horse-42';
 
+// Needs a Sepolia history provider (Alchemy). In CI that is the optional
+// E2E_ALCHEMY_SEPOLIA_URL secret, which sets E2E_SEPOLIA_HISTORY; local runs
+// are unchanged.
+test.skip(
+  !!process.env.CI && !process.env.E2E_SEPOLIA_HISTORY,
+  'set the E2E_ALCHEMY_SEPOLIA_URL repository secret to run this in CI',
+);
+
 test('renders Ethereum Sepolia history served by wallet-api', async ({ page }) => {
   test.setTimeout(150_000);
 

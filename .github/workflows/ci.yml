@@ -66,13 +66,30 @@ jobs:
       - run: cp apps/web/.env.example apps/web/.env.local && pnpm --filter @qd/web build
       - run: npx playwright install --with-deps chromium
         working-directory: apps/web
+      # The testnets come from public endpoints (no secret needed). Sepolia
+      # history needs Alchemy: set the repository secret E2E_ALCHEMY_SEPOLIA_URL
+      # (https://eth-sepolia.g.alchemy.com/v2/<key>) to run that test too.
       - name: Start Anvil and wallet-api
+        env:
+          ALCHEMY_SEPOLIA_URL: ${{ secrets.E2E_ALCHEMY_SEPOLIA_URL }}
         run: |
           anvil --port 8545 --chain-id 31337 --silent &
           cd services/wallet-api && CGO_ENABLED=0 go build -o /tmp/wallet-api ./cmd/wallet-api
+          SEPOLIA=publicnode=https://ethereum-sepolia-rpc.publicnode.com
+          HISTORY=none
+          if [ -n "$ALCHEMY_SEPOLIA_URL" ]; then
+            SEPOLIA="alchemy=$ALCHEMY_SEPOLIA_URL,$SEPOLIA"
+            HISTORY=alchemy
+            echo "E2E_SEPOLIA_HISTORY=1" >> "$GITHUB_ENV"
+          fi
           APP_ENV=development STORE=memory COOKIE_SECURE=false ALLOWED_ORIGINS=http://localhost:3100 \
-            EVM_RPC_31337=anvil=http://127.0.0.1:8545 PRICE_PROVIDER=static /tmp/wallet-api &
-          sleep 3
+            EVM_RPC_31337=anvil=http://127.0.0.1:8545 PRICE_PROVIDER=static \
+            EVM_RPC_11155111="$SEPOLIA" HISTORY_PROVIDER_11155111="$HISTORY" \
+            EVM_RPC_84532=publicnode=https://base-sepolia-rpc.publicnode.com \
+            EVM_RPC_421614=publicnode=https://arbitrum-sepolia-rpc.publicnode.com \
+            EVM_RPC_80002=publicnode=https://polygon-amoy-bor-rpc.publicnode.com \
+            /tmp/wallet-api &
+          for i in $(seq 1 30); do curl -sf http://localhost:8080/healthz >/dev/null && break; sleep 1; done
       - run: npx playwright test
         working-directory: apps/web
         env:
@@ -90,6 +107,10 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: gitleaks/gitleaks-action@v2
         env: { GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}" }
-      - uses: google/osv-scanner-action/osv-scanner-action@v1
+      # Exceptions, each with a reason and an expiry: osv-scanner.toml.
+      - uses: google/osv-scanner-action/osv-scanner-action@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
         with:
-          scan-args: --recursive ./
+          # One argument per line (the action splits on newlines).
+          scan-args: |-
+            --recursive
+            ./

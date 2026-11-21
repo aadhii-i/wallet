@@ -18,8 +18,17 @@ func (r *transactionsRepo) Create(ctx context.Context, t *store.Transaction) err
 		(id, user_id, account_id, network_id, hash, from_address, to_address, asset_id, amount, fee, nonce, status, block_number, origin, flags, created_at, updated_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		t.ID, t.UserID, t.AccountID, t.NetworkID, t.Hash, t.From, t.To, t.AssetID, t.Amount, t.Fee, t.Nonce,
-		string(t.Status), t.BlockNumber, string(t.Origin), t.Flags, t.CreatedAt, t.UpdatedAt)
+		string(t.Status), t.BlockNumber, string(t.Origin), flagsOrEmpty(t.Flags), t.CreatedAt, t.UpdatedAt)
 	return mapConflict(err)
+}
+
+// flagsOrEmpty: transactions.flags is NOT NULL DEFAULT '{}', and pgx sends a
+// nil slice as SQL NULL, so a transaction without flags stores an empty array.
+func flagsOrEmpty(f []string) []string {
+	if f == nil {
+		return []string{}
+	}
+	return f
 }
 
 func scanTx(row pgx.Row) (*store.Transaction, error) {
@@ -46,7 +55,7 @@ func (r *transactionsRepo) Get(ctx context.Context, userID, id uuid.UUID) (*stor
 
 func (r *transactionsRepo) Update(ctx context.Context, t *store.Transaction) error {
 	tag, err := r.pool.Exec(ctx, `UPDATE transactions SET status=$1, block_number=$2, fee=$3, flags=$4, updated_at=now() WHERE id=$5`,
-		string(t.Status), t.BlockNumber, t.Fee, t.Flags, t.ID)
+		string(t.Status), t.BlockNumber, t.Fee, flagsOrEmpty(t.Flags), t.ID)
 	if err != nil {
 		return err
 	}

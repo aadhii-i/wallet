@@ -32,7 +32,15 @@ import { AccountOnChain, LIFECYCLE_LABEL, LIFECYCLE_TONE, SigningPanel, useAccou
 const POLL_MS = 3_000;
 
 /** Networks a proposal can target (execution needs the API's RPC and relayer for that chain). */
-export const PROPOSAL_NETWORKS = [{ chainId: 11155111, name: 'Sepolia' }] as const;
+// Test networks only (the API rejects any other chain). Sepolia first: it is the default.
+// Local Anvil is listed only when local networks are enabled (never in production builds).
+export const PROPOSAL_NETWORKS: readonly { chainId: number; name: string }[] = [
+  { chainId: 11155111, name: 'Sepolia' },
+  { chainId: 84532, name: 'Base Sepolia' },
+  { chainId: 421614, name: 'Arbitrum Sepolia' },
+  { chainId: 80002, name: 'Polygon Amoy' },
+  ...(process.env.NEXT_PUBLIC_ENABLE_LOCAL_NETWORKS === 'true' ? [{ chainId: 31337, name: 'Localhost (Anvil)' }] : []),
+];
 
 const networkName = (chainId: number) => PROPOSAL_NETWORKS.find((n) => n.chainId === chainId)?.name ?? `Chain ${chainId}`;
 
@@ -746,7 +754,7 @@ const emptyDraft = (accountId = ''): ProposalDraft => ({
   accountId,
   to: '',
   amount: '',
-  chainId: String(PROPOSAL_NETWORKS[0].chainId),
+  chainId: String(PROPOSAL_NETWORKS[0]?.chainId ?? 11155111),
   data: '',
   nonce: '0',
   gasLimit: '21000',

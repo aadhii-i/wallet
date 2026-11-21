@@ -105,34 +105,53 @@ func New(st store.Store, chains func(int64) (Caller, bool), logger *slog.Logger)
 	}
 }
 
+// Run indexes every chain in its own loop: chains have separate provider
+// quotas, so a long catch-up on one (after downtime, under a provider's
+// log-range cap and the background rate limit) never delays the others.
 func (ix *Indexer) Run(ctx context.Context) {
-	t := time.NewTicker(ix.Interval)
-	defer t.Stop()
-	for {
-		ix.Tick(ctx)
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-		}
+	var wg sync.WaitGroup
+	for _, id := range ix.ChainIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(ix.Interval)
+			defer t.Stop()
+			for {
+				ix.TickChain(ctx, id)
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+				}
+			}
+		}()
 	}
+	wg.Wait()
 }
 
 // Tick runs one pass over every watched address on every chain.
 func (ix *Indexer) Tick(ctx context.Context) {
+	for _, id := range ix.ChainIDs {
+		ix.TickChain(ctx, id)
+	}
+}
+
+// TickChain runs one pass over every watched address on one chain.
+func (ix *Indexer) TickChain(ctx context.Context, id int64) {
 	watched, err := ix.store.ChainIndex().WatchedAddresses(ctx)
 	if err != nil {
 		ix.warn("watch", "chain index: listing addresses failed", err)
 		return
 	}
-	for _, id := range ix.ChainIDs {
-		for _, w := range watched {
-			if ctx.Err() != nil {
-				return
-			}
-			if err := ix.syncAddress(ctx, id, w.Address, w.Kind == "shared", false); err != nil && !errors.Is(err, ErrIndexing) {
-				ix.warn(fmt.Sprintf("%d/%s", id, w.Address), "chain index pass failed", err)
-			}
+	for _, w := range watched {
+		if ctx.Err() != nil {
+			return
+		}
+		// One step per address per round: addresses take turns, so a long
+		// catch-up on one never holds back the others (a shared account's
+		// fresh executions are recorded at the start of its every pass).
+		if err := ix.syncAddress(ctx, id, w.Address, w.Kind == "shared", false, ix.roundRange()); err != nil && !errors.Is(err, ErrIndexing) {
+			ix.warn(fmt.Sprintf("%d/%s", id, w.Address), "chain index pass failed", err)
 		}
 	}
 }
@@ -145,7 +164,7 @@ func (ix *Indexer) Sync(ctx context.Context, chainID int64, addresses []string, 
 	}
 	var errs []error
 	for _, a := range addresses {
-		if err := ix.syncAddress(ctx, chainID, strings.ToLower(a), shared, true); err != nil {
+		if err := ix.syncAddress(ctx, chainID, strings.ToLower(a), shared, true, ix.MaxRange); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -213,7 +232,15 @@ func (p *pass) windowStart() uint64 {
 	return p.firstIndexed - ix.LogWindow
 }
 
-func (ix *Indexer) syncAddress(ctx context.Context, chainID int64, addr string, shared, try bool) error {
+// roundRange is how far a background round advances one address.
+func (ix *Indexer) roundRange() uint64 {
+	if ix.StepBlocks > 0 && ix.StepBlocks < ix.MaxRange {
+		return ix.StepBlocks
+	}
+	return ix.MaxRange
+}
+
+func (ix *Indexer) syncAddress(ctx context.Context, chainID int64, addr string, shared, try bool, maxRange uint64) error {
 	raw, ok := ix.chains(chainID)
 	if !ok {
 		return nil
@@ -248,8 +275,8 @@ func (ix *Indexer) syncAddress(ctx context.Context, chainID int64, addr string, 
 		return nil
 	}
 	lo, hi := cur.ScannedThrough, latest
-	if hi > lo+ix.MaxRange {
-		hi = lo + ix.MaxRange
+	if hi > lo+maxRange {
+		hi = lo + maxRange
 	}
 	p := &pass{ix: ix, ctx: ctx, chain: chain, chainID: chainID, addr: addr, shared: shared, times: map[uint64]time.Time{}, done: map[string]bool{}}
 	p.firstIndexed = cur.SinceBlock + ix.Backfill

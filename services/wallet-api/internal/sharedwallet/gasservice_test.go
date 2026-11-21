@@ -88,6 +88,13 @@ func TestEstimateProposalReportsBothBalancesAndSendsNothing(t *testing.T) {
 	if len(re.chain.sent) != 0 {
 		t.Fatal("an estimate must never send a transaction")
 	}
+	// A throttled provider is reported as temporary, and nothing is sent.
+	re.chain.throttle = true
+	est = must(re.r.EstimateProposal(ctx, re.prop, key))
+	re.chain.throttle = false
+	if est.CanProceed || est.Blocker != rateLimitedBlocker || len(re.chain.sent) != 0 {
+		t.Fatalf("throttled: %+v", est)
+	}
 	// No gas service account for the chain: reported, not guessed.
 	re.r.keys = nil
 	est = must(re.r.EstimateProposal(ctx, re.prop, key))

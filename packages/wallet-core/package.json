@@ -26,6 +26,6 @@
     "@noble/post-quantum": "0.7.1",
     "typescript": "6.0.3",
     "viem": "2.56.8",
-    "vitest": "5.0.1"
+    "vitest": "5.0.5"
   }
 }

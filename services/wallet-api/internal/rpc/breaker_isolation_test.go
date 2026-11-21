@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -19,7 +20,7 @@ import (
 // everyone else on the same provider.
 func TestHeavyMethodTimeoutDoesNotOpenBreakerForOtherMethods(t *testing.T) {
 	block := make(chan struct{})
-	callCount := 0
+	var callCount atomic.Int32 // the upstream serves requests concurrently
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ID     json.RawMessage `json:"id"`
@@ -27,7 +28,7 @@ func TestHeavyMethodTimeoutDoesNotOpenBreakerForOtherMethods(t *testing.T) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		if req.Method == "eth_call" {
-			callCount++
+			callCount.Add(1)
 			<-block // always times out
 			return
 		}

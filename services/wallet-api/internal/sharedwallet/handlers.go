@@ -17,6 +17,21 @@ import (
 
 const SepoliaChainID int64 = 11155111
 
+// executionChains are the only chains a shared-wallet proposal may target and
+// the relayer may submit to: public testnets and local Anvil. The on-chain
+// Raccoon verifier is research-grade, so no mainnet is ever listed here.
+var executionChains = map[int64]bool{
+	SepoliaChainID: true, // Ethereum Sepolia
+	84532:          true, // Base Sepolia
+	421614:         true, // Arbitrum Sepolia
+	80002:          true, // Polygon Amoy
+	31337:          true, // local Anvil
+}
+
+// ExecutionChainAllowed reports whether shared-wallet proposals and relayer
+// execution are permitted on chainID (testnets and local Anvil only).
+func ExecutionChainAllowed(chainID int64) bool { return executionChains[chainID] }
+
 type Handlers struct {
 	svc      *Service
 	relayer  *Relayer
@@ -484,8 +499,8 @@ func (h *Handlers) createProposal(w http.ResponseWriter, r *http.Request) {
 	if !decode(w, r, &req) {
 		return
 	}
-	if req.ChainID != SepoliaChainID {
-		httpx.BadRequest(w, r, "UNSUPPORTED_CHAIN", "Shared wallet execution is available on Ethereum Sepolia only")
+	if !ExecutionChainAllowed(req.ChainID) {
+		httpx.BadRequest(w, r, "UNSUPPORTED_CHAIN", "Shared wallet execution is available on test networks only (Sepolia, Base Sepolia, Arbitrum Sepolia, Polygon Amoy, local Anvil)")
 		return
 	}
 	acct, err := uuid.Parse(req.AccountID)

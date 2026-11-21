@@ -81,7 +81,7 @@ describe.skipIf(!API)('shared wallet over HTTP with 5 independent users', () => 
     expect(p).toMatchObject({ approvals: 3, status: 'approved', remainingApprovals: 0 });
     expect(p.signing?.status).toBe('awaiting_key_generation');
     expect(p.signing?.signers).toHaveLength(3);
-    expect(p.execution.status).toBe('unavailable');
+    expect(p.execution.status).toBe('not_started');
   });
 
   it('rejects forged votes, enforces revocation and recalculates the threshold', async () => {

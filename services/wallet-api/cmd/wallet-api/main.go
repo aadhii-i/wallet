@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,9 +75,23 @@ func run() error {
 	isProduction := cfg.AppEnv == config.EnvProduction
 
 	// --- KeyManager (§13.3) -------------------------------------------------
-	km, err := security.NewLocalDevKeyManager(cfg.DevKeyDir, isProduction)
-	if err != nil {
-		return fmt.Errorf("key manager: %w", err)
+	var km security.KeyManager
+	switch cfg.KeyManager {
+	case config.KeyManagerEnv:
+		envKM, err := security.NewEnvKeyManager(security.EnvKeys{SigningKey: cfg.JWTSigningKey, EncryptionKey: cfg.KeyEncryptionKey})
+		if err != nil {
+			return fmt.Errorf("key manager: %w", err)
+		}
+		// Public fingerprint only: confirms which key this instance runs with.
+		logger.Info("key manager: deployment keys loaded", "kind", "env",
+			"signingKeyFingerprint", envKM.Fingerprint(), "encryptionKeyConfigured", envKM.HasEncryptionKey())
+		km = envKM
+	default:
+		devKM, err := security.NewLocalDevKeyManager(cfg.DevKeyDir, isProduction)
+		if err != nil {
+			return fmt.Errorf("key manager: %w", err)
+		}
+		km = devKM
 	}
 
 	csrfKey, err := loadOrGenerateKey(cfg, "csrf.key", cfg.CSRFKey)
@@ -137,6 +152,11 @@ func run() error {
 			rpcUpstreams = append(rpcUpstreams, rpc.Upstream{Name: u.Name, URL: u.URL})
 		}
 		pools[chainID] = rpc.NewPool(chainID, rpcUpstreams, logger)
+		if chainID != 31337 {
+			// Background work (chain indexing) must leave the provider
+			// quota to users and the relayer.
+			pools[chainID].SetBackgroundRate(float64(cfg.RPCBackgroundRPS))
+		}
 	}
 	registry := evm.NewRegistry(upstreamCounts)
 	rpcManager := rpc.NewManager(registry, pools)
@@ -221,24 +241,33 @@ func run() error {
 	sharedHandlers := sharedwallet.NewHandlers(sharedwallet.NewService(st))
 
 	// --- Shared-wallet relayer: submits verified Raccoon signatures to QdAccount.
+	// Relayer keys are used only when shared wallets are enabled, and only for
+	// test networks: a key configured for any other chain is ignored.
 	sharedKeys := make(map[int64]string)
-	if key := cfg.RelayerKeys[sharedwallet.SepoliaChainID]; cfg.EnableSharedWallets && key != "" {
-		sharedKeys[sharedwallet.SepoliaChainID] = key
+	for chainID, key := range cfg.RelayerKeys {
+		if cfg.EnableSharedWallets && key != "" && sharedwallet.ExecutionChainAllowed(chainID) {
+			sharedKeys[chainID] = key
+		} else if key != "" {
+			logger.Warn("shared-wallet relayer key ignored", "chain", chainID, "sharedWalletsEnabled", cfg.EnableSharedWallets)
+		}
 	}
 	relayerKeys, err := sharedwallet.ParseRelayerKeys(sharedKeys)
 	if err != nil {
 		return err
 	}
 	relayer := sharedwallet.NewRelayer(st, func(chainID int64) (sharedwallet.ChainCaller, bool) {
-		if chainID != sharedwallet.SepoliaChainID {
+		if !sharedwallet.ExecutionChainAllowed(chainID) {
 			return nil, false
 		}
 		p, ok := pools[chainID]
 		return p, ok
 	}, relayerKeys, logger)
-	if _, ok := pools[sharedwallet.SepoliaChainID]; ok {
-		relayer.ChainIDs = []int64{sharedwallet.SepoliaChainID}
+	for chainID := range pools {
+		if sharedwallet.ExecutionChainAllowed(chainID) {
+			relayer.ChainIDs = append(relayer.ChainIDs, chainID)
+		}
 	}
+	slices.Sort(relayer.ChainIDs)
 	for chainID := range relayerKeys {
 		addr, _ := relayer.RelayerAddress(chainID)
 		logger.Warn("shared-wallet relayer enabled (development)", "chain", chainID, "relayer", addr.Hex())
@@ -271,6 +300,8 @@ func run() error {
 	sharedHandlers.SetRelayer(relayer)
 	if cfg.EnableSharedWallets {
 		go relayer.Run(healthCtx)
+		// The gas monitor watches one address with a small call budget: it stays
+		// in the normal lane so Gas Service history is not queued behind indexing.
 		go sharedwallet.NewGasMonitor(relayer).Run(healthCtx)
 	}
 	relayerStatus := newRelayerStatusHandler(relayer)
@@ -288,7 +319,10 @@ func run() error {
 	// Chain index: persistent personal Activity and shared Wallet History from receipts (read-only).
 	chainIndex := indexer.New(st, func(chainID int64) (indexer.Caller, bool) {
 		p, ok := pools[chainID]
-		return p, ok
+		if !ok {
+			return nil, false
+		}
+		return rpc.BackgroundCaller(p), true
 	}, logger)
 	for chainID := range pools {
 		chainIndex.ChainIDs = append(chainIndex.ChainIDs, chainID)

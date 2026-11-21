@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/qdwallet/wallet-api/internal/qdaccount"
 	"github.com/qdwallet/wallet-api/internal/qdraccoon"
+	"github.com/qdwallet/wallet-api/internal/rpc"
 	"github.com/qdwallet/wallet-api/internal/store"
 )
 
@@ -50,6 +51,7 @@ type fakeChain struct {
 	call      *qdaccount.Call
 	message   [32]byte
 	rpcDown   bool
+	throttle  bool   // the provider answers HTTP 429
 	rejectRaw string // eth_sendRawTransaction error
 	// holdExecutes keeps transactions to the account in the mempool (others still auto-mine).
 	holdExecutes bool
@@ -72,6 +74,9 @@ func q(v uint64) string { return hexutil.EncodeUint64(v) }
 func (f *fakeChain) Call(_ context.Context, method string, params any) (json.RawMessage, error) {
 	if f.rpcDown {
 		return nil, errors.New("dial tcp: https://eth-sepolia.example/v2/SECRETKEY connection refused")
+	}
+	if f.throttle {
+		return nil, &rpc.RateLimitedError{Provider: "alchemy"}
 	}
 	p, _ := params.([]any)
 	j := func(v any) (json.RawMessage, error) { b, err := json.Marshal(v); return b, err }

@@ -229,15 +229,17 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   for (const page of all) {
     const summary = big(page).getByRole('region', { name: 'Execution summary' });
     await expect(summary.getByLabel('Execution readiness')).toContainText('Blocked', { timeout: 120_000 });
-    await expect(summary.getByText(/The shared account is short by 4\.03 ETH/)).toBeVisible({ timeout: 60_000 });
-    await expect(summary.getByLabel('Shared account balance')).toHaveText('0.97 ETH');
-    await expect(summary.getByLabel('Gas Service Account balance')).toHaveText(/^\d+(\.\d+)? ETH$/);
+    await expect(summary.getByText(/The shared account is short by 4\.03 (Sepolia)?ETH/)).toBeVisible({ timeout: 60_000 });
+    await expect(summary.getByLabel('Shared account balance')).toHaveText(/^0\.97 (Sepolia)?ETH$/);
+    await expect(summary.getByLabel('Gas Service Account balance')).toHaveText(/^\d+(\.\d+)? (Sepolia)?ETH$/);
   }
   await expect(big(adhil).getByLabel('Proposal status')).toHaveText('Insufficient shared-account funds', { timeout: 120_000 });
   expect(await anvil<string>('eth_getTransactionCount', [RELAYER, 'latest'])).toBe(relayerNonceBefore);
 
   // --- Gas Service Account (Settings → Network & Gas): same account, live balance, recharge detection ---
-  await anvil('eth_sendTransaction', [{ from: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', to: RELAYER, value: '0x2386f26fc10000' }]); // 0.01 ETH
+  const rechargeHash = await anvil<string>('eth_sendTransaction', [{ from: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266', to: RELAYER, value: '0x2386f26fc10000' }]); // 0.01 ETH
+  // Blocks are timed (like Sepolia): wait until the recharge is mined before reading balances.
+  await expect.poll(async () => (await anvil<{ status: string } | null>('eth_getTransactionReceipt', [rechargeHash]))?.status, { timeout: 30_000 }).toBe('0x1');
   for (const page of all) {
     // In-app navigation (a full reload locks the wallet by design).
     await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Settings', exact: true }).filter({ visible: true }).first().click();
@@ -247,7 +249,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
     // The displayed balance is the chain's, exactly (nothing more is being spent at this point).
     await expect(gas.getByRole('button', { name: 'Refresh balance' })).toBeEnabled();
     await gas.getByRole('button', { name: 'Refresh balance' }).click();
-    await expect(gas.getByLabel('Gas service balance', { exact: true })).toHaveText(`${formatEth(await balance(RELAYER))} ETH`, { timeout: 15_000 });
+    await expect(gas.getByLabel('Gas service balance', { exact: true })).toHaveText(new RegExp(`^${formatEth(await balance(RELAYER)).replace('.', '\\.')} (Sepolia)?ETH$`), { timeout: 15_000 });
     await expect(gas.getByLabel('Gas service status', { exact: true })).toHaveText('Healthy');
     // History from receipts: the incoming recharge and the execution's gas payment, linked to its proposal.
     const history = gas.getByRole('region', { name: 'Gas service history' });
@@ -260,7 +262,7 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   const gas = adhil.getByLabel('Gas Service Account', { exact: true });
   await gas.getByRole('button', { name: 'Fund / Recharge account' }).click();
   const sheet = adhil.getByRole('dialog');
-  await expect(sheet.getByText(/Send ETH to this address to fund QD Wallet’s gas service account\. This account pays blockchain execution fees for shared-wallet transactions\./)).toBeVisible();
+  await expect(sheet.getByText(/Send (Sepolia)?ETH to this address to fund QD Wallet’s gas service account\. This account pays blockchain execution fees for shared-wallet transactions\./)).toBeVisible();
   await expect(sheet.getByRole('img', { name: new RegExp(`QR code for ${RELAYER}`, 'i') })).toBeVisible();
   await expect(sheet.getByLabel('Funding address', { exact: true })).toHaveText(new RegExp(`^${RELAYER}$`, 'i'));
 
@@ -269,9 +271,9 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   await p3.getByRole('button', { name: /^Network: .*Change network$/ }).click();
   await p3.getByRole('option', { name: /Sepolia/ }).click();
   await p3.getByRole('tab', { name: 'Activity' }).click();
-  const received = p3.getByRole('button', { name: /Received ETH/ }).first();
+  const received = p3.getByRole('button', { name: /Received (Sepolia)?ETH/ }).first();
   await expect(received).toBeVisible({ timeout: 60_000 });
-  await expect(received).toContainText('+0.01 ETH');
+  await expect(received).toContainText(/\+0\.01 (Sepolia)?ETH/);
   await received.click();
   const sheet2 = p3.getByRole('dialog');
   await expect(sheet2.getByText(p3Hash.slice(0, 10), { exact: false })).toBeVisible();

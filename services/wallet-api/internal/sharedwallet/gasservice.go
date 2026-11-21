@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/qdwallet/wallet-api/internal/qdaccount"
+	"github.com/qdwallet/wallet-api/internal/rpc"
 	"github.com/qdwallet/wallet-api/internal/store"
 )
 
@@ -240,6 +241,10 @@ func (r *Relayer) EstimateProposal(ctx context.Context, prop *store.Proposal, ke
 		est.RelayerConfigured, est.RelayerAddress = true, x.from.Hex()
 	}
 	got, err := r.quantity(ctx, chain, "eth_chainId", []any{})
+	if err != nil && rpc.IsRateLimited(err) {
+		est.Blocker = rateLimitedBlocker
+		return est, nil
+	}
 	if err != nil {
 		est.Blocker = "the network's RPC is unreachable: " + sanitize(err.Error())
 		return est, nil
@@ -251,6 +256,10 @@ func (r *Relayer) EstimateProposal(ctx context.Context, prop *store.Proposal, ke
 	est.RPCOK = true
 
 	pre, err := r.preflight(ctx, x)
+	if err != nil && rpc.IsRateLimited(err) {
+		est.Blocker = rateLimitedBlocker
+		return est, nil
+	}
 	if err != nil {
 		est.Blocker = "could not read chain state: " + sanitize(err.Error())
 		return est, nil
@@ -378,3 +387,7 @@ func decU64(s string) uint64 {
 	v, _ := hexutil.DecodeUint64(s)
 	return v
 }
+
+// rateLimitedBlocker: the provider is throttling (temporary). Nothing is
+// sent; the estimate is refreshed and the relayer retries on its own.
+const rateLimitedBlocker = "the network's RPC provider is temporarily rate-limiting requests (HTTP 429); nothing was sent, and the estimate will refresh automatically"

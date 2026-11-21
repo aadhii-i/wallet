@@ -85,21 +85,21 @@ type EsploraUTXO struct {
 
 // EsploraTx is one entry of /tx/:txid or /address/:address/txs.
 type EsploraTx struct {
-	TxID     string `json:"txid"`
-	Fee      int64  `json:"fee"`
-	Size     int    `json:"size"`
-	Weight   int    `json:"weight"`
-	Vin      []EsploraVin  `json:"vin"`
-	Vout     []EsploraVout `json:"vout"`
-	Status   EsploraTxStatus `json:"status"`
+	TxID   string          `json:"txid"`
+	Fee    int64           `json:"fee"`
+	Size   int             `json:"size"`
+	Weight int             `json:"weight"`
+	Vin    []EsploraVin    `json:"vin"`
+	Vout   []EsploraVout   `json:"vout"`
+	Status EsploraTxStatus `json:"status"`
 }
 
 // EsploraVin is one input of an EsploraTx.
 type EsploraVin struct {
-	TxID    string        `json:"txid"`
-	Vout    uint32        `json:"vout"`
-	Prevout *EsploraVout  `json:"prevout"` // nil for unconfirmed inputs without prevout data
-	IsCoinbase bool       `json:"is_coinbase"`
+	TxID       string       `json:"txid"`
+	Vout       uint32       `json:"vout"`
+	Prevout    *EsploraVout `json:"prevout"` // nil for unconfirmed inputs without prevout data
+	IsCoinbase bool         `json:"is_coinbase"`
 }
 
 // EsploraVout is one output (or prevout) of an EsploraTx.
@@ -185,7 +185,9 @@ func (e *Esplora) GetAddressUTXOs(ctx context.Context, address string) ([]Esplor
 
 // GetAddressTxs returns the transaction history for address, newest first.
 // Endpoint: GET /address/:address/txs           (up to 50 mempool + 25 confirmed)
-//           GET /address/:address/txs/chain/:last  (next confirmed page)
+//
+//	GET /address/:address/txs/chain/:last  (next confirmed page)
+//
 // afterTxID is the last seen txid for pagination; empty string fetches the
 // first page.
 func (e *Esplora) GetAddressTxs(ctx context.Context, address, afterTxID string) ([]EsploraTx, error) {

@@ -15,14 +15,60 @@ func (p *Pool) Call(ctx context.Context, method string, params any) (json.RawMes
 	if err != nil {
 		return nil, err
 	}
+	if method == "eth_sendRawTransaction" {
+		// Never retried or shared: see ratelimit.go.
+		return p.callOnce(ctx, method, paramsJSON)
+	}
+	key := method + "\x00" + string(paramsJSON)
+	if isBackground(ctx) {
+		key = "bg\x00" + key
+	}
+	return p.reads.shared(ctx, key, method, func(ctx context.Context) (json.RawMessage, error) {
+		return p.callRead(ctx, method, paramsJSON)
+	})
+}
+
+// callRead is one read with foreground retries on HTTP 429. Background
+// callers are not retried here: they wait their turn in callOnce, and their
+// loops (indexer, gas monitor) retry on their own schedule.
+func (p *Pool) callRead(ctx context.Context, method string, paramsJSON json.RawMessage) (json.RawMessage, error) {
+	tries := foregroundTries
+	if isBackground(ctx) {
+		tries = 1
+	}
+	for n := 0; ; n++ {
+		out, err := p.callOnce(ctx, method, paramsJSON)
+		var rl *RateLimitedError
+		if err == nil || !errors.As(err, &rl) || n+1 >= tries {
+			return out, err
+		}
+		if werr := sleepCtx(ctx, retryWait(n, rl.RetryAfter)); werr != nil {
+			return nil, err
+		}
+	}
+}
+
+// callOnce tries each candidate provider once, in failover order.
+func (p *Pool) callOnce(ctx context.Context, method string, paramsJSON json.RawMessage) (json.RawMessage, error) {
 	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method, Params: paramsJSON}
 	timeout := methodTimeout(method)
+	bg := isBackground(ctx)
 	var lastErr error
 	for _, prov := range p.candidates() {
+		if bg {
+			if err := prov.awaitBackgroundTurn(ctx); err != nil {
+				return nil, err
+			}
+		}
 		resp, err := prov.call(ctx, p.chainLabel(), req, timeout)
 		if err != nil {
-			prov.recordFailure()
+			if shouldCountAsProviderFailure(err, method) {
+				prov.recordFailure()
+			}
 			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		if resp.Error != nil {

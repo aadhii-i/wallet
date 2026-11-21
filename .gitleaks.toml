@@ -1,0 +1,20 @@
+# gitleaks configuration: the default rules plus a narrow allow-list.
+#
+# Only these exact public test values are allowed. Each is a fixture, not a
+# secret. A real secret added anywhere, including in the same files, is still
+# reported. Do not add patterns here; add exact values with a reason.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public test fixtures (see comments)"
+regexTarget = "match"
+regexes = [
+  # Anvil test account #1 private key (published by Foundry; local Anvil only, refused in production)
+  '''0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d''',
+  # Hedera account PUBLIC key in a mocked-mirror unit test (apps/web/src/lib/hedera-transfer.test.ts)
+  '''02769c7b5ad457fb3f57a78a1b783ea0c8d207d3f7c4fb2a08bed8c1cb4016a956''',
+  # SHA-256 test vector in keygen_vector_test.go (independently computed hash, not a key)
+  '''bdaf76ae70b0ce3fc93a281afab76b7ffbcdc7b86c5b50754c23a28a1f53df27''',
+]
