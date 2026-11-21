@@ -1,0 +1,18 @@
+# OSV-Scanner configuration (used by the `security` job in .github/workflows/ci.yml).
+#
+# Each exception names one advisory, says why it does not apply, and expires,
+# so it is reviewed again rather than forgotten. Do not add an exception for
+# an advisory that has a fixed version: upgrade instead.
+
+[[IgnoredVulns]]
+id = "GHSA-848j-6mx2-7j84"
+ignoreUntil = 2027-02-21
+reason = """
+elliptic 6.6.1: ECDSA signatures with a truncated nonce. No fixed version exists.
+It reaches the web app only through @hashgraph/sdk -> @ethersproject/abi
+-> @ethersproject/signing-key, which the SDK uses to encode contract-call ABI
+data. No wallet key is ever signed with it: EVM signing (packages/wallet-core
+hd-signer.ts) and Hedera ECDSA signing (@hashgraph/cryptography) both use
+@noble/curves. Re-check on expiry, or as soon as a patched elliptic or an SDK
+release without it is available.
+"""
