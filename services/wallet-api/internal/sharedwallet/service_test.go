@@ -10,12 +10,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/qdwallet/wallet-api/internal/auth"
 	"github.com/qdwallet/wallet-api/internal/platform/db"
@@ -50,21 +52,64 @@ var ctx = context.Background()
 // testStore is the in-memory store, or Postgres when TEST_DATABASE_URL is set
 // (e.g. TEST_DATABASE_URL=postgres://… go test ./internal/sharedwallet), so the
 // same scenarios exercise both implementations.
+//
+// On Postgres every test gets a database of its own, migrated from empty and
+// dropped afterwards, so it starts as empty as a fresh in-memory store. The
+// relayer and gas monitor read store-wide state (every pending execution on a
+// chain, every recorded gas transfer); in a shared database, rows left by
+// earlier tests, or by other packages using the same server, would leak into
+// those results.
 func testStore(t *testing.T) store.Store {
 	t.Helper()
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
+	base := os.Getenv("TEST_DATABASE_URL")
+	if base == "" {
 		return memory.New()
 	}
-	if err := db.Migrate(url); err != nil {
+	dsn := isolatedDatabase(t, base)
+	if err := db.Migrate(dsn); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	pool, err := pgxpool.New(ctx, url)
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(pool.Close) // runs before the drop below (cleanups run last-in, first-out)
 	return postgres.New(pool)
+}
+
+// isolatedDatabase creates an empty database for this test on the server
+// TEST_DATABASE_URL points to, and returns the URL of that database. The
+// role in TEST_DATABASE_URL needs CREATEDB (CI's Postgres service user has it).
+func isolatedDatabase(t *testing.T, base string) string {
+	t.Helper()
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := "qd_test_" + hex.EncodeToString(b[:])
+	admin := func(sql string) error {
+		c, err := pgx.Connect(context.Background(), base)
+		if err != nil {
+			return err
+		}
+		defer c.Close(context.Background())
+		_, err = c.Exec(context.Background(), sql)
+		return err
+	}
+	if err := admin("CREATE DATABASE " + name); err != nil {
+		t.Fatalf("create test database: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := admin("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)"); err != nil {
+			t.Errorf("drop test database %s: %v", name, err)
+		}
+	})
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatalf("TEST_DATABASE_URL: %v", err)
+	}
+	u.Path = "/" + name
+	return u.String()
 }
 
 func (e *env) newUser(name string) *participant {
