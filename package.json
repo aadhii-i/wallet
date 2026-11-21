@@ -19,7 +19,8 @@
     "overrides": {
       "protobufjs@8": "^8.8.1",
       "@grpc/grpc-js@1": "^1.14.7",
-      "source-map-js@1": "^1.2.4"
+      "source-map-js@1": "^1.2.4",
+      "vite@8": "^8.3.3"
     }
   }
 }

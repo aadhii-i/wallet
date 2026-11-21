@@ -19,7 +19,7 @@
     "@qd/qd-crypto": "workspace:*",
     "@qd/wallet-core": "workspace:*",
     "typescript": "6.0.3",
-    "vitest": "5.0.1",
+    "vitest": "5.0.5",
     "viem": "2.56.8"
   }
 }
