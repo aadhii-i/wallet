@@ -17,3 +17,7 @@ packages/qd-crypto/types/
 
 # Development store snapshots (make api)
 .data/
+
+# Private supervisor submission copies; keep PDFs outside the repository.
+/docs/QD-Wallet-Progress-Report.pdf
+/docs/contributions/QD-Wallet-Contribution-Report.pdf

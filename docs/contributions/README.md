@@ -8,13 +8,15 @@ explicitly.
 ## Current review pack
 
 - [Supervisor contribution report](QD-Wallet-Contribution-Report.md)
-- [Submission PDF](QD-Wallet-Contribution-Report.pdf)
 - [Evidence and validation record](evidence-2026-11-24.md)
 - [Milestone log](milestone-log.md)
 - [Integration checkpoint](../changes/2026-11-24-main-integration.md)
 
-The earlier [project progress report](../QD-Wallet-Progress-Report.md) and its PDF
-describe an earlier stage. In particular, their statement that device-to-server
+PDF copies are private reference and manual-submission artifacts; they are kept
+outside the repository. The Markdown reports remain the versioned source.
+
+The earlier [project progress report](../QD-Wallet-Progress-Report.md)
+describes an earlier stage. In particular, its statement that device-to-server
 Threshold Raccoon signing is pending has been superseded by the integrated
 shared-wallet implementation. Use the current review pack for the November
 integration review; retain the earlier report as a historical record.
