@@ -3,6 +3,7 @@
 A non-custodial, multi-chain wallet (Ethereum / EVM now, Monero and QD/MPC signing later) with a web client, a Go backend and shared TypeScript wallet libraries.
 
 - **Specification:** [docs/architecture/qd-wallet-v1-technical-spec.md](docs/architecture/qd-wallet-v1-technical-spec.md)
+- **Contribution and supervisor review pack:** [docs/contributions/](docs/contributions/README.md)
 - **Decisions:** [docs/adr/](docs/adr/README.md)
 - **API contract:** [docs/api/openapi.yaml](docs/api/openapi.yaml)
 - **Chain registry contract:** [docs/api/networks.json](docs/api/networks.json) ([ADR 0015](docs/adr/0015-one-network-table-asserted-from-both-sides.md))
