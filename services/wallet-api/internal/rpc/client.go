@@ -28,24 +28,13 @@ func (p *Pool) Call(ctx context.Context, method string, params any) (json.RawMes
 	})
 }
 
-// callRead is one read with foreground retries on HTTP 429. Background
+// callRead is one read with foreground retries on temporary throttling. Background
 // callers are not retried here: they wait their turn in callOnce, and their
 // loops (indexer, gas monitor) retry on their own schedule.
 func (p *Pool) callRead(ctx context.Context, method string, paramsJSON json.RawMessage) (json.RawMessage, error) {
-	tries := foregroundTries
-	if isBackground(ctx) {
-		tries = 1
-	}
-	for n := 0; ; n++ {
-		out, err := p.callOnce(ctx, method, paramsJSON)
-		var rl *RateLimitedError
-		if err == nil || !errors.As(err, &rl) || n+1 >= tries {
-			return out, err
-		}
-		if werr := sleepCtx(ctx, retryWait(n, rl.RetryAfter)); werr != nil {
-			return nil, err
-		}
-	}
+	return retryRead(ctx, func(ctx context.Context) (json.RawMessage, error) {
+		return p.callOnce(ctx, method, paramsJSON)
+	})
 }
 
 // callOnce tries each candidate provider once, in failover order.
@@ -113,7 +102,9 @@ func (c *namedProviderCaller) Call(ctx context.Context, method string, params an
 	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method, Params: paramsJSON}
 	resp, err := c.provider.call(ctx, c.pool.chainLabel(), req, methodTimeout(method))
 	if err != nil {
-		c.provider.recordFailure()
+		if shouldCountAsProviderFailure(err, method) {
+			c.provider.recordFailure()
+		}
 		return nil, err
 	}
 	if resp.Error != nil {

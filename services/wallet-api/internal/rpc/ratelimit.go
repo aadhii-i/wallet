@@ -52,18 +52,22 @@ func (b *backgroundCaller) Call(ctx context.Context, method string, params any) 
 	return b.p.Call(Background(ctx), method, params)
 }
 
-// RateLimitedError is a provider's HTTP 429. The text keeps the
-// "returned HTTP 429" wording callers already match on.
+// RateLimitedError describes temporary upstream or local admission pressure.
+// Upstream errors keep the "returned HTTP 429" wording callers match on.
 type RateLimitedError struct {
 	Provider   string
 	RetryAfter time.Duration
+	Local      bool
 }
 
 func (e *RateLimitedError) Error() string {
+	if e.Local {
+		return fmt.Sprintf("rpc: provider %s local request quota exhausted", e.Provider)
+	}
 	return fmt.Sprintf("rpc: provider %s returned HTTP %d", e.Provider, http.StatusTooManyRequests)
 }
 
-// IsRateLimited reports whether err is (or wraps) a provider's HTTP 429.
+// IsRateLimited reports an upstream HTTP 429 or local provider quota exhaustion.
 func IsRateLimited(err error) bool {
 	var r *RateLimitedError
 	return errors.As(err, &r)
@@ -77,6 +81,25 @@ const (
 	foregroundWaitHi = 4 * time.Second
 	backoffBase      = 250 * time.Millisecond
 )
+
+// retryRead gives foreground reads bounded retries for temporary throttling.
+// Background callers leave retries to their own scheduling loops.
+func retryRead(ctx context.Context, call func(context.Context) (json.RawMessage, error)) (json.RawMessage, error) {
+	tries := foregroundTries
+	if isBackground(ctx) {
+		tries = 1
+	}
+	for n := 0; ; n++ {
+		out, err := call(ctx)
+		var limited *RateLimitedError
+		if !errors.As(err, &limited) || n+1 >= tries {
+			return out, err
+		}
+		if waitErr := sleepCtx(ctx, retryWait(n, limited.RetryAfter)); waitErr != nil {
+			return nil, waitErr
+		}
+	}
+}
 
 // parseRetryAfter reads a Retry-After header: delta seconds or an HTTP date.
 func parseRetryAfter(h string, now time.Time) time.Duration {

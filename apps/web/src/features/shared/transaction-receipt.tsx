@@ -7,6 +7,7 @@
 import { useQuery } from '@tanstack/react-query';
 import type { Address } from 'viem';
 import { EVM_NETWORKS } from '@qd/blockchain';
+import { nativeSymbol } from '@/lib/shared-network';
 import { proxyRequest, type Proposal, type SharedWallet } from '@qd/rpc';
 import { executionMessage, proposalCall } from '@qd/qd-account';
 import { getApi } from '@/lib/api';
@@ -106,7 +107,7 @@ export function TransactionReceiptCard({ wallet, proposal: p, verifiedOnDevice }
     from: f.from,
     to: f.to,
     amountEth: formatWeiAsEth(f.valueWei.toString()),
-    symbol: 'ETH',
+    symbol: nativeSymbol(p.chainId),
     blockNumber: f.blockNumber,
     blockTimestamp: f.blockTimestamp,
     txNonce: f.txNonce,
@@ -162,18 +163,18 @@ export function TransactionReceiptCard({ wallet, proposal: p, verifiedOnDevice }
         <Row label="Network">{network} (chain ID {p.chainId})</Row>
         <Row label="From (shared account)" mono>{f.from}</Row>
         <Row label="To (recipient)" mono>{f.to}</Row>
-        <Row label="Amount">{receipt.amountEth} ETH</Row>
+        <Row label="Amount">{receipt.amountEth} {receipt.symbol}</Row>
         <Row label="Block">{f.blockNumber} · {new Date(f.blockTimestamp).toLocaleString()}</Row>
         <Row label="Transaction nonce">{f.txNonce} (relayer) · account nonce {f.accountNonce}</Row>
         <Row label="Gas used">{receipt.gasUsed}</Row>
         <Row label="Effective gas price">{receipt.effectiveGasPriceWei} wei</Row>
-        <Row label="Total gas fee">{receipt.totalFeeEth} ETH (paid by the relayer {f.relayer.slice(0, 10)}…)</Row>
+        <Row label="Total gas fee">{receipt.totalFeeEth} {receipt.symbol} (paid by the relayer {f.relayer.slice(0, 10)}…)</Row>
         <Row label="Threshold policy">{receipt.policy}</Row>
         <Row label="Signing participants">{signers.join(', ')}</Row>
         <Row label="Raccoon signature">{verification}</Row>
         <Row label="Balances now">
-          Recipient {recipientBalance.data !== undefined ? `${formatWeiAsEth(recipientBalance.data.toString())} ETH` : '…'} · shared account{' '}
-          {accountBalance.data !== undefined ? `${formatWeiAsEth(accountBalance.data.toString())} ETH` : '…'} (live from the chain)
+          Recipient {recipientBalance.data !== undefined ? `${formatWeiAsEth(recipientBalance.data.toString())} ${receipt.symbol}` : '…'} · shared account{' '}
+          {accountBalance.data !== undefined ? `${formatWeiAsEth(accountBalance.data.toString())} ${receipt.symbol}` : '…'} (live from the chain)
         </Row>
       </dl>
       <p className="mt-2 text-xs text-subtle">{receiptDisclaimer(network, explorer?.name.includes('etherscan') ? 'Etherscan' : (explorer?.name ?? 'a block explorer'))}</p>

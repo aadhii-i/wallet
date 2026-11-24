@@ -259,26 +259,62 @@ func rejectCaseVariantDuplicateKeys(params json.RawMessage) error {
 // must never reach the response body. Providers already log the sanitized
 // (provider name + unwrapped cause, never URL) detail themselves.
 func (h *Handler) forwardRead(ctx context.Context, pool *Pool, req rpcEnvelope) rpcEnvelope {
+	// Internal callers may fail over on RPC errors; the proxy preserves them.
+	// Separate keys retain those existing error policies.
+	key := "proxy\x00" + req.Method + "\x00" + string(req.Params)
+	raw, err := pool.reads.shared(ctx, key, req.Method, func(ctx context.Context) (json.RawMessage, error) {
+		return retryRead(ctx, func(ctx context.Context) (json.RawMessage, error) {
+			resp, err := h.forwardReadOnce(ctx, pool, req)
+			if err != nil {
+				return nil, err
+			}
+			if resp.Error != nil {
+				return nil, &proxyReadError{rpcError: resp.Error}
+			}
+			return json.Marshal(resp)
+		})
+	})
+	var upstreamError *proxyReadError
+	if errors.As(err, &upstreamError) {
+		return rpcEnvelope{JSONRPC: "2.0", ID: req.ID, Error: upstreamError.rpcError}
+	}
+	var resp rpcEnvelope
+	if err != nil || json.Unmarshal(raw, &resp) != nil {
+		return rpcErrorResponse(req.ID, -32603, "upstream unavailable")
+	}
+	resp.ID = req.ID
+	return resp
+}
+
+// Returning RPC errors as errors prevents readShare from caching them.
+type proxyReadError struct {
+	*rpcError
+}
+
+func (e *proxyReadError) Error() string { return e.Message }
+
+func (h *Handler) forwardReadOnce(ctx context.Context, pool *Pool, req rpcEnvelope) (*rpcEnvelope, error) {
 	timeout := methodTimeout(req.Method)
+	var lastErr error
 	for _, prov := range pool.candidates() {
 		resp, err := prov.call(ctx, pool.chainLabel(), req, timeout)
 		if err != nil {
+			lastErr = err
 			if shouldCountAsProviderFailure(err, req.Method) {
 				prov.recordFailure()
 			}
 			if ctx.Err() != nil {
 				break // the client is gone: no failover on its behalf
 			}
-			if isReadMethod(req.Method) {
-				continue
-			}
-			break
+			continue
 		}
 		prov.recordSuccess()
-		resp.ID = req.ID
-		return *resp
+		return resp, nil
 	}
-	return rpcErrorResponse(req.ID, -32603, "upstream unavailable")
+	if lastErr == nil {
+		lastErr = errors.New("rpc: no upstream providers configured")
+	}
+	return nil, lastErr
 }
 
 // sendRawTransaction implements the careful broadcast policy from spec

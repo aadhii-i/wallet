@@ -29,6 +29,7 @@ import { QdAccount, accountAddress, executionMessage, proposalCall } from '@qd/q
 import { getApi } from '@/lib/api';
 import { VaultClientError, vault } from '@/lib/vault-client';
 import { formatWeiAsEth } from '@/lib/eth-amount';
+import { nativeSymbol } from '@/lib/shared-network';
 import { Button } from '@/components/ui/button';
 import { CopyButton } from '@/components/ui/identity';
 import { PROPOSAL_NETWORKS, errorMessage } from './shared-wallets';
@@ -194,7 +195,7 @@ function AccountBalance({ view, chainId, onRetry }: { view: BalanceView<ChainSta
     case 'ready':
       return (
         <>
-          <span aria-label="Account balance">{formatWeiAsEth(view.data.balanceWei)} ETH</span>
+          <span aria-label="Account balance">{formatWeiAsEth(view.data.balanceWei)} {nativeSymbol(chainId)}</span>
           <span className="text-subtle">{view.data.deployed ? `nonce ${view.data.nonce}` : 'not deployed yet (deployed on first execution)'}</span>
         </>
       );
@@ -473,7 +474,7 @@ function ExecutionSteps({ p, ex }: { p: Proposal; ex: ExecutionInfo }) {
         <Step state="failed">
           Insufficient relayer funds — {ex.lastError}
           {relayer.chain?.relayerBalanceWei !== undefined && (
-            <span className="block text-xs text-subtle">Gas Service Account balance now: {formatWeiAsEth(relayer.chain.relayerBalanceWei)} ETH. Nothing has been spent; this continues once funded.</span>
+            <span className="block text-xs text-subtle">Gas Service Account balance now: {formatWeiAsEth(relayer.chain.relayerBalanceWei)} {nativeSymbol(p.chainId)}. Nothing has been spent; this continues once funded.</span>
           )}
           <a href="/settings#gas-service" className="block text-xs text-primary underline">Open Gas Service Account (fund / recharge)</a>
         </Step>

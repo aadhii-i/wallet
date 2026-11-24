@@ -318,7 +318,7 @@ function FundSheet({ open, onOpenChange, cs, onRefresh }: { open: boolean; onOpe
                 <a href={net.faucetUrl} target="_blank" rel="noopener noreferrer" className="text-primary underline">
                   {new URL(net.faucetUrl).host}
                 </a>{' '}
-                and paste the address above. Faucet ETH has no monetary value.
+                and paste the address above. Faucet tokens have no monetary value.
               </li>
             )}
           </ul>

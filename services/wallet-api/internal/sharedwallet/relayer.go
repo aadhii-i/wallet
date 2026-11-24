@@ -449,6 +449,7 @@ type setupStep struct {
 type feeQuote struct {
 	base, tip, feeCap *big.Int
 	blockGasLimit     uint64
+	extraFees         map[uint64]*big.Int
 }
 
 type preflightResult struct {
@@ -464,6 +465,10 @@ type preflightResult struct {
 // and whether the account is at this proposal's nonce. It sends nothing.
 func (r *Relayer) preflight(ctx context.Context, x *execContext) (*preflightResult, error) {
 	out := &preflightResult{}
+	symbol := "ETH"
+	if x.prop.ChainID == 80002 {
+		symbol = "POL"
+	}
 	if dep, err := r.hasCode(ctx, x.chain, qdaccount.Deployer); err != nil {
 		return nil, err
 	} else if !dep {
@@ -567,24 +572,24 @@ func (r *Relayer) preflight(ctx context.Context, x *execContext) (*preflightResu
 	}
 	if accBal.Cmp(x.call.Value) < 0 {
 		out.waitStage = store.ExecStageAccountFunds
-		out.waitMsg = fmt.Sprintf("the shared account %s holds %s ETH but the transfer needs %s ETH; fund the shared account (not the relayer)",
-			x.account.Hex(), formatEther(accBal), formatEther(x.call.Value))
+		out.waitMsg = fmt.Sprintf("the shared account %s holds %s %s but the transfer needs %s %s; fund the shared account (not the relayer)",
+			x.account.Hex(), formatEther(accBal), symbol, formatEther(x.call.Value), symbol)
 		return out, nil
 	}
-	fees, err := r.fees(ctx, x.chain)
+	fees, err := r.fees(ctx, x.prop.ChainID, x.chain, x.call)
 	if err != nil {
 		return nil, err
 	}
 	out.fees = fees
-	need := requiredWei(out.steps, fees.feeCap)
+	need := requiredWei(out.steps, fees)
 	relBal, err := r.balance(ctx, x.chain, x.from)
 	if err != nil {
 		return nil, err
 	}
 	if relBal.Cmp(need) < 0 {
 		out.waitStage = store.ExecStageRelayerFunds
-		out.waitMsg = fmt.Sprintf("the relayer %s holds %s ETH but needs up to %s ETH for %d setup transaction(s) and the execution at the current fee cap of %s wei/gas; fund the relayer",
-			x.from.Hex(), formatEther(relBal), formatEther(need), len(out.steps), fees.feeCap)
+		out.waitMsg = fmt.Sprintf("the relayer %s holds %s %s but needs up to %s %s for %d setup transaction(s) and the execution at the current fee cap of %s wei/gas; fund the relayer",
+			x.from.Hex(), formatEther(relBal), symbol, formatEther(need), symbol, len(out.steps), fees.feeCap)
 		return out, nil
 	}
 	return out, nil
@@ -890,7 +895,7 @@ func (r *Relayer) blockTime(ctx context.Context, chain ChainCaller, number strin
 
 // fees quotes EIP-1559 fees from the latest block: fee cap 3× base fee + tip,
 // which absorbs a few full blocks of base-fee growth before inclusion.
-func (r *Relayer) fees(ctx context.Context, chain ChainCaller) (*feeQuote, error) {
+func (r *Relayer) fees(ctx context.Context, chainID int64, chain ChainCaller, call *qdaccount.Call) (*feeQuote, error) {
 	blockRaw, err := chain.Call(ctx, "eth_getBlockByNumber", []any{"latest", false})
 	if err != nil {
 		return nil, err
@@ -909,26 +914,68 @@ func (r *Relayer) fees(ctx context.Context, chain ChainCaller) (*feeQuote, error
 		}
 	}
 	q.blockGasLimit, _ = hexutil.DecodeUint64(block.GasLimit)
-	tip, err := r.quantity(ctx, chain, "eth_maxPriorityFeePerGas", []any{})
-	if err != nil {
-		tip = big.NewInt(1_000_000_000)
+	tip := new(big.Int)
+	if chainID != 421614 {
+		tip, err = r.quantity(ctx, chain, "eth_maxPriorityFeePerGas", []any{})
+		if err != nil {
+			tip = big.NewInt(1_000_000_000)
+		}
 	}
 	q.tip = tip
-	q.feeCap = new(big.Int).Add(new(big.Int).Mul(q.base, big.NewInt(3)), tip)
+	switch chainID {
+	case 421614:
+		price, err := r.quantity(ctx, chain, "eth_gasPrice", []any{})
+		if err != nil {
+			return nil, fmt.Errorf("Arbitrum gas price unavailable: %w", err)
+		}
+		if price.Sign() <= 0 {
+			return nil, errors.New("Arbitrum gas price must be positive")
+		}
+		if price.Cmp(q.base) > 0 {
+			q.base = price
+		}
+		q.tip = new(big.Int) // ArbOS does not use priority tips for its gas-price model.
+	case 80002:
+		floor, err := r.quantity(ctx, chain, "eth_gasPrice", []any{})
+		if err != nil {
+			return nil, fmt.Errorf("Polygon gas price unavailable: %w", err)
+		}
+		if floor.Sign() <= 0 {
+			return nil, errors.New("Polygon gas price must be positive")
+		}
+		requiredTip := new(big.Int).Sub(floor, q.base)
+		if requiredTip.Cmp(q.tip) > 0 {
+			q.tip = requiredTip
+		}
+	case 84532:
+		q.extraFees, err = r.baseFeeReserves(ctx, chain, call)
+		if err != nil {
+			return nil, err
+		}
+	}
+	q.feeCap = new(big.Int).Add(new(big.Int).Mul(q.base, big.NewInt(3)), q.tip)
+	if chainID == 421614 {
+		q.extraFees, err = r.arbitrumFeeReserves(ctx, chain, call, q)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return q, nil
 }
 
 func (r *Relayer) signTx(ctx context.Context, x *execContext, to common.Address, data []byte, q *feeQuote) (*types.Transaction, error) {
+	if q == nil {
+		var err error
+		if q, err = r.fees(ctx, x.prop.ChainID, x.chain, x.call); err != nil {
+			return nil, err
+		}
+	}
 	gasEst, err := r.quantity(ctx, x.chain, "eth_estimateGas", []any{map[string]string{
 		"from": x.from.Hex(), "to": to.Hex(), "data": hexutil.Encode(data),
+		"maxFeePerGas": hexutil.EncodeBig(q.feeCap), "maxPriorityFeePerGas": hexutil.EncodeBig(q.tip),
 	}})
 	if err != nil {
 		return nil, fmt.Errorf("estimate gas: %w", err)
-	}
-	if q == nil {
-		if q, err = r.fees(ctx, x.chain); err != nil {
-			return nil, err
-		}
 	}
 	gas, err := gasLimitFor(gasEst.Uint64(), q.blockGasLimit, r.MaxGas)
 	if err != nil {
@@ -1038,10 +1085,11 @@ func requiredGas(steps []setupStep) uint64 {
 	return gas * 12 / 10
 }
 
-// requiredWei is requiredGas at the fee cap: the balance the relayer must
-// hold before it starts spending on this execution.
-func requiredWei(steps []setupStep, feeCap *big.Int) *big.Int {
-	return new(big.Int).Mul(new(big.Int).SetUint64(requiredGas(steps)), feeCap)
+// requiredWei includes requiredGas at the fee cap and chain-specific reserves:
+// the balance the relayer must hold before spending on this execution.
+func requiredWei(steps []setupStep, fees *feeQuote) *big.Int {
+	gasCost := new(big.Int).Mul(new(big.Int).SetUint64(requiredGas(steps)), fees.feeCap)
+	return gasCost.Add(gasCost, fees.additionalFees(steps))
 }
 
 // ParseRelayerKeys parses RELAYER_PRIVATE_KEY_<chainId> values. Errors name

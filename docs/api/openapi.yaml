@@ -1385,8 +1385,9 @@ components:
         baseFeeWei: { type: string }
         gasPriceWei: { type: string }
         feeCapWei: { type: string }
-        requiredRelayerWei: { type: string, description: "gasUnits × fee cap: what the gas service account must hold" }
-        estimatedFeeWei: { type: string, description: "gasUnits × current gas price" }
+          requiredRelayerWei: { type: string, description: "gasUnits × fee cap plus additional fee reserve: what the gas service account must hold" }
+          estimatedFeeWei: { type: string, description: "gasUnits × current gas price plus additional fee reserve" }
+        additionalFeeReserveWei: { type: string, description: "L1 data and operator fee reserve, included in requiredRelayerWei and estimatedFeeWei" }
         relayerShortfallWei: { type: string }
         accountShortfallWei: { type: string }
         canProceed: { type: boolean }

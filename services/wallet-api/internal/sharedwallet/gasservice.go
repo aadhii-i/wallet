@@ -98,7 +98,7 @@ func (r *Relayer) funding(ctx context.Context, chainID int64, chain ChainCaller,
 	if r.Monitor != nil {
 		f.ScannedThroughBlock, f.HistoryAvailableSince = r.Monitor.coverage(chainID)
 	}
-	q, err := r.fees(ctx, chain)
+	q, err := r.fees(ctx, chainID, chain, nil)
 	if err != nil {
 		f.HealthMessage = "could not read current gas prices: " + sanitize(err.Error())
 		return f
@@ -109,11 +109,11 @@ func (r *Relayer) funding(ctx context.Context, chainID int64, chain ChainCaller,
 	}
 	f.BaseFeeWei, f.TipWei, f.FeeCapWei = q.base.String(), q.tip.String(), q.feeCap.String()
 	f.GasPriceWei = new(big.Int).Add(q.base, q.tip).String()
-	execCost := requiredWei(nil, q.feeCap)
+	execCost := requiredWei(nil, q)
 	f.ExecutionCostWei = execCost.String()
-	f.NewWalletCostWei = requiredWei(fullSetupSteps(!contractsDeployed), q.feeCap).String()
+	f.NewWalletCostWei = requiredWei(fullSetupSteps(!contractsDeployed), q).String()
 
-	pendingOps, pending := r.pendingRequirement(ctx, chainID, chain, from, q.feeCap)
+	pendingOps, pending := r.pendingRequirement(ctx, chainID, chain, from, q)
 	f.PendingOperations = pendingOps
 	f.PendingRequiredWei = pending.String()
 
@@ -121,7 +121,7 @@ func (r *Relayer) funding(ctx context.Context, chainID int64, chain ChainCaller,
 	f.LowBalanceConfigured = low != nil
 	if low == nil {
 		// Default: enough to set up one more wallet key and execute once.
-		low = requiredWei(fullSetupSteps(false), q.feeCap)
+		low = requiredWei(fullSetupSteps(false), q)
 	}
 	f.LowBalanceWei = low.String()
 	if balance == nil {
@@ -145,13 +145,14 @@ func (r *Relayer) funding(ctx context.Context, chainID int64, chain ChainCaller,
 // waiting on this chain: remaining setup (each distinct setup transaction
 // counted once, since proposals of one wallet key share it) plus one execute
 // per execution, at the fee cap with gas-limit headroom.
-func (r *Relayer) pendingRequirement(ctx context.Context, chainID int64, chain ChainCaller, from common.Address, feeCap *big.Int) (int, *big.Int) {
+func (r *Relayer) pendingRequirement(ctx context.Context, chainID int64, chain ChainCaller, from common.Address, fees *feeQuote) (int, *big.Int) {
 	execs, err := r.store.SharedWallets().ListExecutions(ctx, []store.ExecutionStatus{store.ExecPending, store.ExecSubmitting, store.ExecSubmitted})
 	if err != nil {
 		return 0, big.NewInt(0)
 	}
 	seen := map[common.Hash]bool{}
 	var gas uint64
+	extra := new(big.Int)
 	ops := 0
 	for _, e := range execs {
 		if e.ChainID != chainID {
@@ -159,6 +160,7 @@ func (r *Relayer) pendingRequirement(ctx context.Context, chainID int64, chain C
 		}
 		ops++
 		gas += gasBoundExecute * 12 / 10
+		extra.Add(extra, fees.extraFee(gasBoundExecute))
 		if e.Status == store.ExecSubmitted {
 			continue // setup done; only the broadcast execute is outstanding
 		}
@@ -176,36 +178,39 @@ func (r *Relayer) pendingRequirement(ctx context.Context, chainID int64, chain C
 			if !seen[h] {
 				seen[h] = true
 				gas += s.gas * 12 / 10
+				extra.Add(extra, fees.extraFee(s.gas))
 			}
 		}
 	}
-	return ops, new(big.Int).Mul(new(big.Int).SetUint64(gas), feeCap)
+	need := new(big.Int).Mul(new(big.Int).SetUint64(gas), fees.feeCap)
+	return ops, need.Add(need, extra)
 }
 
 // GasEstimate is what executing one proposal requires right now: the shared
 // account pays the transfer value, the gas service account pays the gas.
 type GasEstimate struct {
-	ChainID             int64    `json:"chainId"`
-	CheckedAt           string   `json:"checkedAt"`
-	RPCOK               bool     `json:"rpcOk"`
-	RelayerConfigured   bool     `json:"relayerConfigured"`
-	RelayerAddress      string   `json:"relayerAddress,omitempty"`
-	RelayerBalanceWei   *string  `json:"relayerBalanceWei"`
-	AccountAddress      string   `json:"accountAddress"`
-	AccountDeployed     *bool    `json:"accountDeployed"`
-	AccountBalanceWei   *string  `json:"accountBalanceWei"`
-	TransferWei         string   `json:"transferWei"`
-	SetupSteps          []string `json:"setupSteps"`
-	GasUnits            uint64   `json:"gasUnits"` // upper bound incl. 20 % gas-limit headroom
-	BaseFeeWei          string   `json:"baseFeeWei,omitempty"`
-	GasPriceWei         string   `json:"gasPriceWei,omitempty"`
-	FeeCapWei           string   `json:"feeCapWei,omitempty"`
-	RequiredRelayerWei  string   `json:"requiredRelayerWei,omitempty"` // gasUnits × fee cap: must be held before the relayer starts
-	EstimatedFeeWei     string   `json:"estimatedFeeWei,omitempty"`    // gasUnits × current gas price: likely upper cost now
-	RelayerShortfallWei string   `json:"relayerShortfallWei,omitempty"`
-	AccountShortfallWei string   `json:"accountShortfallWei,omitempty"`
-	CanProceed          bool     `json:"canProceed"`
-	Blocker             string   `json:"blocker,omitempty"`
+	ChainID                 int64    `json:"chainId"`
+	CheckedAt               string   `json:"checkedAt"`
+	RPCOK                   bool     `json:"rpcOk"`
+	RelayerConfigured       bool     `json:"relayerConfigured"`
+	RelayerAddress          string   `json:"relayerAddress,omitempty"`
+	RelayerBalanceWei       *string  `json:"relayerBalanceWei"`
+	AccountAddress          string   `json:"accountAddress"`
+	AccountDeployed         *bool    `json:"accountDeployed"`
+	AccountBalanceWei       *string  `json:"accountBalanceWei"`
+	TransferWei             string   `json:"transferWei"`
+	SetupSteps              []string `json:"setupSteps"`
+	GasUnits                uint64   `json:"gasUnits"` // upper bound incl. 20 % gas-limit headroom
+	BaseFeeWei              string   `json:"baseFeeWei,omitempty"`
+	GasPriceWei             string   `json:"gasPriceWei,omitempty"`
+	FeeCapWei               string   `json:"feeCapWei,omitempty"`
+	RequiredRelayerWei      string   `json:"requiredRelayerWei,omitempty"` // gasUnits × fee cap: must be held before the relayer starts
+	EstimatedFeeWei         string   `json:"estimatedFeeWei,omitempty"`    // gasUnits × current gas price: likely upper cost now
+	AdditionalFeeReserveWei string   `json:"additionalFeeReserveWei,omitempty"`
+	RelayerShortfallWei     string   `json:"relayerShortfallWei,omitempty"`
+	AccountShortfallWei     string   `json:"accountShortfallWei,omitempty"`
+	CanProceed              bool     `json:"canProceed"`
+	Blocker                 string   `json:"blocker,omitempty"`
 }
 
 // EstimateProposal runs the relayer's preflight for a proposal without a
@@ -270,16 +275,18 @@ func (r *Relayer) EstimateProposal(ctx context.Context, prop *store.Proposal, ke
 	est.GasUnits = requiredGas(pre.steps)
 	q := pre.fees
 	if q == nil {
-		if q, err = r.fees(ctx, chain); err != nil {
+		if q, err = r.fees(ctx, prop.ChainID, chain, call); err != nil {
 			est.Blocker = "could not read gas prices: " + sanitize(err.Error())
 			return est, nil
 		}
 	}
 	price := new(big.Int).Add(q.base, q.tip)
-	need := requiredWei(pre.steps, q.feeCap)
+	need := requiredWei(pre.steps, q)
 	est.BaseFeeWei, est.GasPriceWei, est.FeeCapWei = q.base.String(), price.String(), q.feeCap.String()
 	est.RequiredRelayerWei = need.String()
-	est.EstimatedFeeWei = new(big.Int).Mul(new(big.Int).SetUint64(est.GasUnits), price).String()
+	extra := q.additionalFees(pre.steps)
+	est.AdditionalFeeReserveWei = extra.String()
+	est.EstimatedFeeWei = new(big.Int).Add(new(big.Int).Mul(new(big.Int).SetUint64(est.GasUnits), price), extra).String()
 
 	if deployed, err := r.hasCode(ctx, chain, x.account); err == nil {
 		est.AccountDeployed = &deployed

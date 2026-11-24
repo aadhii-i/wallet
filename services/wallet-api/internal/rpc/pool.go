@@ -97,11 +97,12 @@ var heavyClientMethods = map[string]struct{}{
 // calling method, should be recorded against the provider's circuit
 // breaker. Excluded: the client cancelling its own request (it navigated
 // away or closed the tab, which says nothing about the upstream), and a
-// context-deadline timeout on a heavy, client-parameterized method.
+// context-deadline timeout on a heavy, client-parameterized method. Local
+// quota exhaustion and upstream throttling also leave the circuit intact.
 // Everything else (connection errors, non-2xx, decode failures, timeouts on
 // other methods) counts as before.
 func shouldCountAsProviderFailure(err error, method string) bool {
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || IsRateLimited(err) {
 		return false
 	}
 	if _, heavy := heavyClientMethods[method]; heavy && errors.Is(err, context.DeadlineExceeded) {
@@ -198,14 +199,19 @@ type rpcEnvelope struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // call sends one JSON-RPC request to the provider with the given timeout.
 func (p *Provider) call(ctx context.Context, chainIDLabel string, req rpcEnvelope, timeout time.Duration) (*rpcEnvelope, error) {
 	if !p.limiter.Allow() {
-		return nil, fmt.Errorf("rpc: provider %s rate limited", p.Name)
+		wait := backoffBase
+		if limit := p.limiter.Limit(); limit > 0 {
+			wait = time.Duration(float64(time.Second) / float64(limit))
+		}
+		return nil, &RateLimitedError{Provider: p.Name, RetryAfter: wait, Local: true}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -367,6 +373,9 @@ func (p *Pool) checkHealthOnce(ctx context.Context) {
 		}
 		req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "eth_blockNumber"}
 		resp, err := prov.call(ctx, p.chainLabel(), req, 3*time.Second)
+		if IsRateLimited(err) {
+			continue // Admission pressure does not establish that the node is unhealthy.
+		}
 		if err != nil || resp.Error != nil {
 			prov.recordFailure()
 			prov.setHealth(false, 0)
@@ -410,7 +419,13 @@ func (p *Pool) verifyChain(ctx context.Context, prov *Provider) bool {
 	}
 	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "eth_chainId"}
 	resp, err := prov.call(ctx, p.chainLabel(), req, 3*time.Second)
-	if err != nil || resp.Error != nil {
+	if err != nil {
+		if shouldCountAsProviderFailure(err, req.Method) {
+			prov.recordFailure()
+		}
+		return false
+	}
+	if resp.Error != nil {
 		prov.recordFailure()
 		return false
 	}

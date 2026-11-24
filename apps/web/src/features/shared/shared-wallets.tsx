@@ -20,6 +20,7 @@ import {
 import { getApi } from '@/lib/api';
 import { VaultClientError, vault } from '@/lib/vault-client';
 import { formatWeiAsEth, parseEthToWei } from '@/lib/eth-amount';
+import { nativeSymbol } from '@/lib/shared-network';
 import { toast } from '@/lib/store';
 import { Button } from '@/components/ui/button';
 import { CopyButton, shortAddress } from '@/components/ui/identity';
@@ -834,7 +835,7 @@ function NewProposal({ wallet }: { wallet: SharedWallet }) {
           <dt className="text-muted">To</dt>
           <dd className="break-all font-mono text-xs">{review.to}</dd>
           <dt className="text-muted">Amount</dt>
-          <dd>{formatWeiAsEth(review.valueWei)} ETH</dd>
+          <dd>{formatWeiAsEth(review.valueWei)} {nativeSymbol(review.chainId)}</dd>
           <dt className="text-muted">Network</dt>
           <dd>
             {networkName(review.chainId)} ({review.chainId})
@@ -915,13 +916,13 @@ function NewProposal({ wallet }: { wallet: SharedWallet }) {
         {sender?.address ? (
           <p className="-mt-1 mb-3 text-xs text-subtle">
             Sends from smart account <span className="font-mono">{sender.address}</span>
-            {chainState.data ? ` · balance ${formatWeiAsEth(chainState.data.balanceWei)} ETH` : ''}
+            {chainState.data ? ` · balance ${formatWeiAsEth(chainState.data.balanceWei)} ${nativeSymbol(Number(draft.chainId))}` : ''}
           </p>
         ) : (
           <p className="-mt-1 mb-3 text-xs text-warning">This account has no smart-account address yet; it can be approved but not executed until one is derived.</p>
         )}
         <TextField label="Recipient address" value={draft.to} onChange={set('to')} mono placeholder="0x…" error={errors.to} />
-        <TextField label="Amount (ETH)" value={draft.amount} onChange={set('amount')} inputMode="decimal" placeholder="0.0" error={errors.amount} />
+        <TextField label={`Amount (${nativeSymbol(Number(draft.chainId))})`} value={draft.amount} onChange={set('amount')} inputMode="decimal" placeholder="0.0" error={errors.amount} />
         <div className="mb-3">
           <label htmlFor={networkSelectId} className="mb-1.5 block text-sm font-medium">
             Network
@@ -1029,10 +1030,10 @@ function ProposalCard({ wallet, proposal: p }: { wallet: SharedWallet; proposal:
   };
 
   return (
-    <article aria-label={`Proposal: ${amount} ETH to ${p.to}`} className="rounded-xl border border-line p-3">
+    <article aria-label={`Proposal: ${amount} ${nativeSymbol(p.chainId)} to ${p.to}`} className="rounded-xl border border-line p-3">
       <div className="mb-2 flex items-start justify-between gap-2">
         <h3 className="font-semibold">
-          {amount} ETH → <span className="font-mono text-sm">{shortAddress(p.to)}</span>
+          {amount} {nativeSymbol(p.chainId)} → <span className="font-mono text-sm">{shortAddress(p.to)}</span>
         </h3>
         <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold ${LIFECYCLE_TONE[p.lifecycle] ?? STATUS_TONE[p.status]}`} aria-label="Proposal status">
           {LIFECYCLE_LABEL[p.lifecycle] ?? STATUS_LABEL[p.status]}

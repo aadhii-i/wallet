@@ -9,6 +9,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { Proposal } from '@qd/rpc';
 import { getApi } from '@/lib/api';
 import { balanceView, eth } from '@/lib/gas-service';
+import { nativeSymbol } from '@/lib/shared-network';
 import { networkLabel } from '../shared/transaction-receipt';
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -28,7 +29,7 @@ export function ExecutionSummary({ proposal: p }: { proposal: Proposal }) {
     queryFn: async () => (await getApi()).gasEstimate(p.id),
   });
   const view = balanceView(p.id, q);
-  const symbol = p.chainId === 11155111 ? 'SepoliaETH' : 'ETH';
+  const symbol = nativeSymbol(p.chainId);
   return (
     <section aria-label="Execution summary" className="mt-2 rounded-lg border border-line bg-surface p-2.5 text-[13px]">
       <h4 className="mb-1 font-semibold">Execution summary · {networkLabel(p.chainId)}</h4>
@@ -66,6 +67,11 @@ export function ExecutionSummary({ proposal: p }: { proposal: Proposal }) {
                   'unavailable'
                 )}
               </Row>
+              {e.additionalFeeReserveWei && BigInt(e.additionalFeeReserveWei) > 0n && (
+                <Row label="Additional network fee reserve">
+                  {eth(e.additionalFeeReserveWei, symbol)} for L1 data and operator fees, included above.
+                </Row>
+              )}
             </dl>
             {e.accountShortfallWei && (
               <p role="alert" className="mt-1 text-warning">

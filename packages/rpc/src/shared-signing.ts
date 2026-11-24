@@ -170,6 +170,8 @@ export interface GasEstimate {
   feeCapWei?: string;
   requiredRelayerWei?: string;
   estimatedFeeWei?: string;
+  /** Additional L1-data and operator fee reserve, already included in totals. */
+  additionalFeeReserveWei?: string;
   relayerShortfallWei?: string;
   accountShortfallWei?: string;
   canProceed: boolean;
