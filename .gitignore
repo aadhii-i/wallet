@@ -13,3 +13,7 @@ coverage/
 services/wallet-api/bin/
 services/wallet-api/tmp/
 .dev-keys/
+packages/qd-crypto/types/
+
+# Development store snapshots (make api)
+.data/

@@ -7,6 +7,9 @@ A non-custodial, multi-chain wallet (Ethereum / EVM now, Monero and QD/MPC signi
 - **API contract:** [docs/api/openapi.yaml](docs/api/openapi.yaml)
 - **Chain registry contract:** [docs/api/networks.json](docs/api/networks.json) ([ADR 0015](docs/adr/0015-one-network-table-asserted-from-both-sides.md))
 - **Enable another chain:** [docs/operations/enable-an-evm-chain.md](docs/operations/enable-an-evm-chain.md)
+- **Shared wallets (50% approvals) and multi-user local testing:** [docs/architecture/shared-wallet-authorization.md](docs/architecture/shared-wallet-authorization.md) ([ADR 0017](docs/adr/0017-shared-wallet-approval-policy-separate-from-raccoon-threshold.md))
+- **Shared-wallet Threshold Raccoon key generation and share provisioning (trusted dealer):** [docs/architecture/shared-wallet-key-generation.md](docs/architecture/shared-wallet-key-generation.md) ([ADR 0018](docs/adr/0018-shared-wallet-trusted-dealer-keygen-and-hpke-share-delivery.md))
+- **Shared-wallet networked Threshold Raccoon signing and on-chain execution (QdAccount on Anvil):** [docs/architecture/shared-wallet-signing-and-execution.md](docs/architecture/shared-wallet-signing-and-execution.md) ([ADR 0019](docs/adr/0019-networked-threshold-raccoon-signing-and-qdaccount-execution.md))
 
 > Status: **V1 preview — testnet/local use only.** Not audited. Do not use with real funds.
 
@@ -23,6 +26,7 @@ A non-custodial, multi-chain wallet (Ethereum / EVM now, Monero and QD/MPC signi
 | M5 Monero | ⏳ blocked on ADR 0006/0007 spike |
 | M6 Security architecture (KMS, policies, recovery) | ⏳ partial (KeyManager interface, audit log, security events) |
 | M7 QD/MPC signing | 🚧 D1 resolved ([analysis](docs/qd-protocol/README.md), [ADR 0014](docs/adr/0014-qd-wallet-protocol-threshold-raccoon-with-stateless-derivation.md)); `packages/qd-crypto` protocol done; co-signer and on-chain verifier next |
+| Shared wallets: ⌈N/2⌉ participant approval | ✅ Independent participants, invitations, immutable proposals, device-key-signed approvals, atomic threshold evaluation (backend + client, tested). ✅ Trusted-dealer T-of-N Raccoon key generation, HPKE X-Wing share delivery to each participant's device, encrypted share storage ([doc](docs/architecture/shared-wallet-key-generation.md)). ✅ Networked three-round Threshold Raccoon signing between participants' devices, coordinator combine + verify, execution through an on-chain Raccoon verifier and smart account, receipt-confirmed — tested end to end on Anvil, not on a public testnet ([doc](docs/architecture/shared-wallet-signing-and-execution.md)) |
 | M8 Production infra | ⏳ CI + compose only |
 
 ## Layout
@@ -70,7 +74,7 @@ make web                # terminal 2 — http://localhost:3000
 
 In the app, choose **Ethereum Sepolia** in the network selector. Under the balance you should see `Ethereum Sepolia · #<latest block>`, which updates every ~15 s. To get test ETH, open **Receive**, copy the address and use the [Alchemy Sepolia faucet](https://www.alchemy.com/faucets/ethereum-sepolia). Transactions link to [sepolia.etherscan.io](https://sepolia.etherscan.io/).
 
-**Signing:** Ethereum transactions are signed with the conventional BIP-32/44 secp256k1 ECDSA signer (`HDSigner`, MetaMask-compatible path `m/44'/60'/0'/0/n`) inside the KeyWorker. The QD threshold signer in `packages/qd-crypto` is **not** used for Ethereum transactions. A Threshold Raccoon signature is not a valid signature for an ordinary Ethereum account; using it needs a smart-contract account with an on-chain verifier (M7).
+**Signing:** Ethereum transactions are signed with the conventional BIP-32/44 secp256k1 ECDSA signer (`HDSigner`, MetaMask-compatible path `m/44'/60'/0'/0/n`) inside the KeyWorker. The QD threshold signer in `packages/qd-crypto` is **not** used for Ethereum transactions. A Threshold Raccoon signature is not a valid signature for an ordinary Ethereum account; shared wallets therefore hold funds in a `QdAccount` smart contract that verifies Raccoon signatures on chain (`contracts/`, ADR 0019). Personal accounts are unaffected.
 
 ### Sepolia progress
 

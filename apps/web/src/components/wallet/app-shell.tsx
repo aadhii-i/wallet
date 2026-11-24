@@ -2,7 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { motion } from 'motion/react';
-import { Activity, Coins, Home, Settings, Shield, Sparkles } from 'lucide-react';
+import { Activity, Coins, Home, Settings, Shield, Sparkles, Users } from 'lucide-react';
 import { useEffect } from 'react';
 import { useActivityKeepAlive, useVaultGate } from '@/lib/gate';
 import { useMeta, useSession } from '@/lib/store';
@@ -25,6 +25,9 @@ export const NAV: NavItem[] = [
   { href: '/assets', label: 'Assets', icon: Coins, status: 'live', mobile: true },
   { href: '/activity', label: 'Activity', icon: Activity, status: 'live', mobile: true },
   { href: '/web3', label: 'Swap & Web3', icon: Sparkles, status: 'soon', mobile: true },
+  ...(process.env.NEXT_PUBLIC_ENABLE_SHARED_WALLETS === 'true'
+    ? [{ href: '/shared', label: 'Shared', icon: Users, status: 'live' as const, mobile: true }]
+    : []),
   { href: '/security', label: 'Security', icon: Shield, status: 'live', mobile: false },
   { href: '/settings', label: 'Settings', icon: Settings, status: 'live', mobile: true },
 ];

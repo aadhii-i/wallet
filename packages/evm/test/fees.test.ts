@@ -97,8 +97,13 @@ const adapterFor = (networkId: string, overrides: Record<string, (params: unknow
 };
 
 describe('fee strategies', () => {
-  it('gives every network in the registry a strategy', () => {
-    for (const network of registry.all()) expect(feeStrategyFor(network).id).toBe(network.feeStrategy);
+  it('gives every EVM network in the registry a strategy', () => {
+    // Bitcoin networks share the registry but have no gas model; their fees are
+    // quoted in sat/vB by packages/bitcoin.
+    for (const network of registry.all()) {
+      if (network.family !== 'evm') continue;
+      expect(feeStrategyFor(network).id).toBe(network.feeStrategy);
+    }
   });
 
   it('refuses a registry entry that names a strategy that does not exist', () => {

@@ -6,6 +6,8 @@ import { defineConfig, devices } from '@playwright/test';
  */
 export default defineConfig({
   testDir: './e2e',
+  // Multi-user shared-wallet specs need their own API and Anvil: playwright.shared.config.ts.
+  testIgnore: /shared-.*\.spec\.ts/,
   timeout: 90_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,

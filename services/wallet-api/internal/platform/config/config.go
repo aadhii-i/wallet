@@ -15,6 +15,17 @@ import (
 
 type Env string
 
+// KeyManagerKind selects where signing and encryption keys come from.
+type KeyManagerKind string
+
+const (
+	// KeyManagerLocalDev generates keys into DEV_KEY_DIR (development only).
+	KeyManagerLocalDev KeyManagerKind = "localdev"
+	// KeyManagerEnv loads keys from JWT_SIGNING_KEY / KEY_ENCRYPTION_KEY
+	// (deployment secrets) and never generates any.
+	KeyManagerEnv KeyManagerKind = "env"
+)
+
 const (
 	EnvDevelopment Env = "development"
 	EnvProduction  Env = "production"
@@ -61,8 +72,16 @@ type Config struct {
 	MetricsAddr    string
 	AllowedOrigins []string
 
-	Store          StoreKind
-	DatabaseURL    string
+	// DevCredentialBurst, when > 0, raises the per-IP bursts for
+	// the unauthenticated /v1/auth/* routes so local multi-user testing can
+	// register many independent devices from one machine. Refused in production.
+	DevCredentialBurst int
+
+	Store       StoreKind
+	DatabaseURL string
+	// StoreSnapshot (STORE_SNAPSHOT) persists the development in-memory store
+	// to this file, so API restarts keep wallets, proposals and executions.
+	StoreSnapshot  string
 	MigrateOnStart bool
 
 	RedisURL string
@@ -76,13 +95,37 @@ type Config struct {
 	CookieSecure bool
 
 	DevKeyDir string
+	// KeyManager (KEY_MANAGER): "env" in production (the default there),
+	// "localdev" by default elsewhere.
+	KeyManager KeyManagerKind
+	// JWTSigningKey (JWT_SIGNING_KEY, secret): P-256 private key PEM (or
+	// base64 of it) that signs access tokens. Required with KEY_MANAGER=env.
+	JWTSigningKey string
+	// KeyEncryptionKey (KEY_ENCRYPTION_KEY, secret, optional): base64 of 32
+	// random bytes for the key manager's Encrypt/Decrypt.
+	KeyEncryptionKey string
 
 	CSRFKey   []byte
 	IPHashKey []byte
 
 	EVMRPC              map[int64][]RPCUpstream
 	EnableLocalNetworks bool
-	HistoryProvider     map[int64]HistoryProviderKind
+	// RelayerKeys (RELAYER_PRIVATE_KEY_<chainId>, hex secp256k1) pay gas to
+	// submit Raccoon-signed shared-wallet calls to QdAccount contracts. A
+	// relayer key cannot move shared funds. Refused in production while the
+	// on-chain Raccoon verifier is research-grade (ADR 0019).
+	RelayerKeys         map[int64]string
+	EnableSharedWallets bool
+	// RPCBackgroundRPS (RPC_BACKGROUND_RPS) paces background RPC work
+	// (chain indexing) per provider on public chains, so it
+	// cannot exhaust the provider quota users and the relayer depend on.
+	// 0 disables the limit. Local chains (31337) are never limited.
+	RPCBackgroundRPS int64
+	// GasLowBalanceWei (GAS_LOW_BALANCE_WEI_<chainId>, decimal wei) overrides
+	// when a chain's gas service account is reported as low. Unset: enough to
+	// set up one more wallet key and execute once at current gas prices.
+	GasLowBalanceWei map[int64]string
+	HistoryProvider  map[int64]HistoryProviderKind
 
 	PriceProvider   PriceProviderKind
 	CoingeckoAPIKey string
@@ -106,6 +149,18 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getNonnegativeInt(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
 }
 
 func getbool(key string, def bool) bool {
@@ -140,24 +195,32 @@ func Load() (*Config, error) {
 		HTTPAddr:            getenv("HTTP_ADDR", ":8080"),
 		MetricsAddr:         getenv("METRICS_ADDR", ":9090"),
 		Store:               StoreKind(getenv("STORE", string(StoreMemory))),
+		StoreSnapshot:       os.Getenv("STORE_SNAPSHOT"),
+		EnableSharedWallets: getbool("ENABLE_SHARED_WALLETS", false),
+		RPCBackgroundRPS:    getint("RPC_BACKGROUND_RPS", 3),
 		DatabaseURL:         getenv("DATABASE_URL", ""),
 		MigrateOnStart:      getbool("MIGRATE_ON_START", false),
+		DevCredentialBurst:  getNonnegativeInt("DEV_CREDENTIAL_RATE_BURST", 0),
 		RedisURL:            getenv("REDIS_URL", ""),
 		CookieSecure:        getbool("COOKIE_SECURE", true),
 		DevKeyDir:           getenv("DEV_KEY_DIR", "./.dev-keys"),
 		EnableLocalNetworks: getbool("ENABLE_LOCAL_NETWORKS", true),
 		PriceProvider:       PriceProviderKind(getenv("PRICE_PROVIDER", string(PriceStatic))),
 		CoingeckoAPIKey:     getenv("COINGECKO_API_KEY", ""),
-		BTCEsploraURL:    getenv("BTC_ESPLORA_URL", ""),
+		BTCEsploraURL:       getenv("BTC_ESPLORA_URL", ""),
 		BTCNetwork:          getenv("BTC_NETWORK", ""),
 		BTCFeeFloorSatVB:    getint("BTC_FEE_FLOOR_SAT_VB", 1),
 		BTCMaxFeeSatVB:      getint("BTC_MAX_FEE_SAT_VB", 500),
 		HederaMirrorURL:     getenv("HEDERA_MIRROR_URL", ""),
 		OTLPEndpoint:        getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
 	}
-	if cfg.AppEnv == EnvDevelopment {
-		// default local dev origin
+	defaultKM := KeyManagerLocalDev
+	if cfg.AppEnv == EnvProduction {
+		defaultKM = KeyManagerEnv
 	}
+	cfg.KeyManager = KeyManagerKind(getenv("KEY_MANAGER", string(defaultKM)))
+	cfg.JWTSigningKey = os.Getenv("JWT_SIGNING_KEY")
+	cfg.KeyEncryptionKey = os.Getenv("KEY_ENCRYPTION_KEY")
 	origins := getenv("ALLOWED_ORIGINS", "http://localhost:3000")
 	for _, o := range strings.Split(origins, ",") {
 		o = strings.TrimSpace(o)
@@ -185,6 +248,8 @@ func Load() (*Config, error) {
 
 	cfg.EVMRPC = map[int64][]RPCUpstream{}
 	cfg.HistoryProvider = map[int64]HistoryProviderKind{}
+	cfg.RelayerKeys = map[int64]string{}
+	cfg.GasLowBalanceWei = map[int64]string{}
 
 	// Well-known chain ids we look for EVM_RPC_<chainId> on.
 	knownChains := []int64{1, 11155111, 8453, 42161, 137, 31337}
@@ -194,6 +259,16 @@ func Load() (*Config, error) {
 			continue
 		}
 		key, val := parts[0], parts[1]
+		if strings.HasPrefix(key, "RELAYER_PRIVATE_KEY_") {
+			if chainID, err := strconv.ParseInt(strings.TrimPrefix(key, "RELAYER_PRIVATE_KEY_"), 10, 64); err == nil && val != "" {
+				cfg.RelayerKeys[chainID] = val
+			}
+		}
+		if strings.HasPrefix(key, "GAS_LOW_BALANCE_WEI_") {
+			if chainID, err := strconv.ParseInt(strings.TrimPrefix(key, "GAS_LOW_BALANCE_WEI_"), 10, 64); err == nil && val != "" {
+				cfg.GasLowBalanceWei[chainID] = val
+			}
+		}
 		if strings.HasPrefix(key, "EVM_RPC_") {
 			idStr := strings.TrimPrefix(key, "EVM_RPC_")
 			chainID, err := strconv.ParseInt(idStr, 10, 64)
@@ -254,7 +329,19 @@ func parseUpstreams(val string) []RPCUpstream {
 // after Load in main(); tests may construct Config literals and skip it.
 func (c *Config) Validate() error {
 	var errs []string
+	switch c.KeyManager {
+	case KeyManagerLocalDev:
+	case KeyManagerEnv:
+		if strings.TrimSpace(c.JWTSigningKey) == "" {
+			errs = append(errs, "JWT_SIGNING_KEY is required when KEY_MANAGER=env")
+		}
+	default:
+		errs = append(errs, `KEY_MANAGER must be "env" or "localdev"`)
+	}
 	if c.AppEnv == EnvProduction {
+		if c.KeyManager == KeyManagerLocalDev {
+			errs = append(errs, "KEY_MANAGER=localdev is refused in production (keys must come from JWT_SIGNING_KEY)")
+		}
 		if c.Store == StoreMemory {
 			errs = append(errs, "STORE=memory is refused when APP_ENV=production")
 		}
@@ -271,6 +358,12 @@ func (c *Config) Validate() error {
 			errs = append(errs, "COOKIE_SECURE=false is refused in production")
 		}
 		errs = append(errs, c.validateBitcoin()...)
+		if c.DevCredentialBurst != 0 {
+			errs = append(errs, "DEV_CREDENTIAL_RATE_BURST is a development-only setting and is refused in production")
+		}
+		if len(c.RelayerKeys) != 0 {
+			errs = append(errs, "RELAYER_PRIVATE_KEY_* is refused in production (research-grade on-chain Raccoon verifier)")
+		}
 	}
 	if len(errs) > 0 {
 		sort.Strings(errs)

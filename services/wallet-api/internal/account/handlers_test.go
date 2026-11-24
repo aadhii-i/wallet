@@ -2,6 +2,7 @@ package account_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -21,6 +24,7 @@ import (
 
 	"github.com/qdwallet/wallet-api/internal/account"
 	"github.com/qdwallet/wallet-api/internal/auth"
+	"github.com/qdwallet/wallet-api/internal/blockchain/hedera"
 	"github.com/qdwallet/wallet-api/internal/security"
 	"github.com/qdwallet/wallet-api/internal/store"
 	"github.com/qdwallet/wallet-api/internal/store/memory"
@@ -35,6 +39,10 @@ type testUser struct {
 }
 
 func newServer(t *testing.T) (*httptest.Server, store.Store) {
+	return newServerWithVerifier(t, nil)
+}
+
+func newServerWithVerifier(t *testing.T, verifier account.HederaAccountVerifier) (*httptest.Server, store.Store) {
 	t.Helper()
 	dir := t.TempDir()
 	km, err := security.NewLocalDevKeyManager(dir, false)
@@ -46,7 +54,7 @@ func newServer(t *testing.T) (*httptest.Server, store.Store) {
 	csrfKey := []byte("csrf-key")
 	authH := auth.NewHandlers(authSvc, []string{testOrigin}, false, auth.CookieNames{Access: "qd_at", Refresh: "qd_rt"}, csrfKey, []byte("ip-key"), nil)
 	acctSvc := account.NewService(st)
-	acctH := account.NewHandlers(acctSvc, st, nil)
+	acctH := account.NewHandlers(acctSvc, st, verifier)
 
 	r := chi.NewRouter()
 	r.Post("/v1/auth/challenge", authH.CreateChallenge)
@@ -279,3 +287,175 @@ func TestCreateWalletIdempotency(t *testing.T) {
 }
 
 func jsonBody(b []byte) *bytes.Reader { return bytes.NewReader(b) }
+
+// ---------------------------------------------------------------------------
+// Hedera registration error mapping
+// ---------------------------------------------------------------------------
+
+type stubHederaVerifier struct {
+	err     error
+	calls   int
+	lastID  string
+	lastKey string
+}
+
+func (s *stubHederaVerifier) VerifyAccountOwnership(_ context.Context, accountID, hexPubKey string) error {
+	s.calls++
+	s.lastID = accountID
+	s.lastKey = hexPubKey
+	return s.err
+}
+
+func createWalletAndAccount(t *testing.T, srv *httptest.Server, u *testUser) (walletID, accountID string) {
+	t.Helper()
+	resp, walletBody := postJSON(t, u.client, srv.URL+"/v1/wallets", map[string]any{"label": "Hedera test"}, map[string]string{"X-CSRF-Token": u.csrf})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create wallet failed: %d %v", resp.StatusCode, walletBody)
+	}
+	walletID = walletBody["id"].(string)
+
+	resp, accBody := postJSON(t, u.client, srv.URL+"/v1/wallets/"+walletID+"/accounts", map[string]any{"hdIndex": 0, "name": "Account 1"}, map[string]string{"X-CSRF-Token": u.csrf})
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create account failed: %d %v", resp.StatusCode, accBody)
+	}
+	return walletID, accBody["id"].(string)
+}
+
+func hederaRegistrationBody(accountID, hexPubKey string) map[string]any {
+	return map[string]any{
+		"networkFamily": "hedera",
+		"address":       accountID,
+		"hexPubKey":     hexPubKey,
+	}
+}
+
+func TestRegisterHederaAddress_ErrorMapping(t *testing.T) {
+	const (
+		hederaAccountID = "0.0.11478972"
+		hexPubKey       = "02769c7b5ad457fb3f57a78a1b783ea0c8d207d3f7c4fb2a08bed8c1cb4016a956"
+	)
+
+	cases := []struct {
+		name        string
+		verifierErr error
+		wantStatus  int
+		wantCode    string
+	}{
+		{
+			// A transient Mirror Node 404 (not indexed yet) must stay retryable
+			// and must never be reported as an ownership failure.
+			name:        "account not visible on the mirror node yet",
+			verifierErr: fmt.Errorf("%w: fingerprint=deadbeef", hedera.ErrAccountNotFound),
+			wantStatus:  http.StatusNotFound,
+			wantCode:    "HEDERA_ACCOUNT_NOT_FOUND",
+		},
+		{
+			name:        "public key mismatch",
+			verifierErr: hedera.ErrPublicKeyMismatch,
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "INVALID_OWNERSHIP",
+		},
+		{
+			name:        "key type mismatch",
+			verifierErr: fmt.Errorf("%w: got %q", hedera.ErrKeyTypeMismatch, "ED25519"),
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "INVALID_OWNERSHIP",
+		},
+		{
+			name:        "malformed hedera account id",
+			verifierErr: fmt.Errorf("%w: fingerprint=deadbeef", hedera.ErrInvalidAccountID),
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "INVALID_BODY",
+		},
+		{
+			name:        "mirror node upstream failure",
+			verifierErr: errors.New("hedera/mirror: get account fingerprint=deadbeef: status 500"),
+			wantStatus:  http.StatusServiceUnavailable,
+			wantCode:    "HEDERA_VERIFICATION_FAILED",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			verifier := &stubHederaVerifier{err: tc.verifierErr}
+			srv, _ := newServerWithVerifier(t, verifier)
+			u := registerUser(t, srv.URL)
+			_, accountID := createWalletAndAccount(t, srv, u)
+
+			resp, body := putJSON(
+				t,
+				u.client,
+				srv.URL+"/v1/accounts/"+accountID+"/addresses",
+				hederaRegistrationBody(hederaAccountID, hexPubKey),
+				map[string]string{"X-CSRF-Token": u.csrf},
+			)
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (%v)", resp.StatusCode, tc.wantStatus, body)
+			}
+			if body["code"] != tc.wantCode {
+				t.Errorf("code = %v, want %q", body["code"], tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestRegisterHederaAddress_Success(t *testing.T) {
+	const (
+		hederaAccountID = "0.0.11478972"
+		hexPubKey       = "02769c7b5ad457fb3f57a78a1b783ea0c8d207d3f7c4fb2a08bed8c1cb4016a956"
+	)
+
+	verifier := &stubHederaVerifier{}
+	srv, _ := newServerWithVerifier(t, verifier)
+	u := registerUser(t, srv.URL)
+	_, accountID := createWalletAndAccount(t, srv, u)
+
+	resp, body := putJSON(
+		t,
+		u.client,
+		srv.URL+"/v1/accounts/"+accountID+"/addresses",
+		hederaRegistrationBody(hederaAccountID, hexPubKey),
+		map[string]string{"X-CSRF-Token": u.csrf},
+	)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%v)", resp.StatusCode, body)
+	}
+	if body["address"] != hederaAccountID {
+		t.Errorf("address = %v, want %q", body["address"], hederaAccountID)
+	}
+	if body["networkFamily"] != "hedera" {
+		t.Errorf("networkFamily = %v, want hedera", body["networkFamily"])
+	}
+	if verifier.calls != 1 {
+		t.Errorf("verifier calls = %d, want 1", verifier.calls)
+	}
+	if verifier.lastID != hederaAccountID {
+		t.Errorf("verified account id = %q, want %q", verifier.lastID, hederaAccountID)
+	}
+	if verifier.lastKey != hexPubKey {
+		t.Errorf("verified key = %q, want %q", verifier.lastKey, hexPubKey)
+	}
+}
+
+func TestRegisterHederaAddress_UnknownAccountIsNotFound(t *testing.T) {
+	verifier := &stubHederaVerifier{}
+	srv, _ := newServerWithVerifier(t, verifier)
+	u := registerUser(t, srv.URL)
+
+	resp, body := putJSON(
+		t,
+		u.client,
+		srv.URL+"/v1/accounts/"+uuid.NewString()+"/addresses",
+		hederaRegistrationBody("0.0.11478972", "02769c7b5ad457fb3f57a78a1b783ea0c8d207d3f7c4fb2a08bed8c1cb4016a956"),
+		map[string]string{"X-CSRF-Token": u.csrf},
+	)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (%v)", resp.StatusCode, body)
+	}
+	if body["code"] != "NOT_FOUND" {
+		t.Errorf("code = %v, want NOT_FOUND", body["code"])
+	}
+	if verifier.calls != 0 {
+		t.Errorf("verifier calls = %d, want 0 (no ownership check for an unknown account)", verifier.calls)
+	}
+}

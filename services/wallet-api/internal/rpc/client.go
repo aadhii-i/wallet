@@ -15,14 +15,49 @@ func (p *Pool) Call(ctx context.Context, method string, params any) (json.RawMes
 	if err != nil {
 		return nil, err
 	}
+	if method == "eth_sendRawTransaction" {
+		// Never retried or shared: see ratelimit.go.
+		return p.callOnce(ctx, method, paramsJSON)
+	}
+	key := method + "\x00" + string(paramsJSON)
+	if isBackground(ctx) {
+		key = "bg\x00" + key
+	}
+	return p.reads.shared(ctx, key, method, func(ctx context.Context) (json.RawMessage, error) {
+		return p.callRead(ctx, method, paramsJSON)
+	})
+}
+
+// callRead is one read with foreground retries on temporary throttling. Background
+// callers are not retried here: they wait their turn in callOnce, and their
+// loops (indexer, gas monitor) retry on their own schedule.
+func (p *Pool) callRead(ctx context.Context, method string, paramsJSON json.RawMessage) (json.RawMessage, error) {
+	return retryRead(ctx, func(ctx context.Context) (json.RawMessage, error) {
+		return p.callOnce(ctx, method, paramsJSON)
+	})
+}
+
+// callOnce tries each candidate provider once, in failover order.
+func (p *Pool) callOnce(ctx context.Context, method string, paramsJSON json.RawMessage) (json.RawMessage, error) {
 	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method, Params: paramsJSON}
 	timeout := methodTimeout(method)
+	bg := isBackground(ctx)
 	var lastErr error
 	for _, prov := range p.candidates() {
+		if bg {
+			if err := prov.awaitBackgroundTurn(ctx); err != nil {
+				return nil, err
+			}
+		}
 		resp, err := prov.call(ctx, p.chainLabel(), req, timeout)
 		if err != nil {
-			prov.recordFailure()
+			if shouldCountAsProviderFailure(err, method) {
+				prov.recordFailure()
+			}
 			lastErr = err
+			if ctx.Err() != nil {
+				break
+			}
 			continue
 		}
 		if resp.Error != nil {
@@ -67,7 +102,9 @@ func (c *namedProviderCaller) Call(ctx context.Context, method string, params an
 	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: method, Params: paramsJSON}
 	resp, err := c.provider.call(ctx, c.pool.chainLabel(), req, methodTimeout(method))
 	if err != nil {
-		c.provider.recordFailure()
+		if shouldCountAsProviderFailure(err, method) {
+			c.provider.recordFailure()
+		}
 		return nil, err
 	}
 	if resp.Error != nil {

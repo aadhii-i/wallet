@@ -8,14 +8,15 @@ import { ActionRow, BalanceHero, Tabs } from '@/components/wallet/balance';
 import { AssetList } from '@/components/wallet/asset-list';
 import { ActivityList } from '@/components/wallet/activity-list';
 import { ReceiveSheet } from '@/components/wallet/receive-sheet';
-import { useActivity, useNetwork, useValuedHoldings } from '@/lib/hooks';
+import { useAccountAddress, useActivity, useNetwork, useValuedHoldings } from '@/lib/hooks';
 import { useSelectedAccount, useSession } from '@/lib/store';
 import { t } from '@/components/ui/motion';
 
 export default function HomePage() {
   const account = useSelectedAccount();
+  const address = useAccountAddress();
   const network = useNetwork();
-  const { holdings, valued, totalCents } = useValuedHoldings(account?.address);
+  const { holdings, valued, totalCents } = useValuedHoldings(address);
   const activity = useActivity(account);
   const [tab, setTab] = useState<'tokens' | 'activity'>('tokens');
   const [receive, setReceive] = useState(false);
@@ -45,7 +46,7 @@ export default function HomePage() {
           fetching={holdings.isFetching}
           onRefresh={() => void holdings.refetch()}
           network={network}
-          address={account?.address}
+          address={address}
         />
       </motion.div>
       <ActionRow onReceive={() => setReceive(true)} />

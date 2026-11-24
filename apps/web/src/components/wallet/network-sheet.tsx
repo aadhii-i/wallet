@@ -7,26 +7,41 @@ import { useSelectableNetworks, useUnmodelledNetworks } from '@/lib/hooks';
 import { toast, useMeta } from '@/lib/store';
 import { Sheet } from '../ui/sheet';
 import { t } from '../ui/motion';
+import {
+  EthereumLogo,
+  BitcoinLogo,
+  HederaLogo,
+  BaseLogo,
+  ArbitrumLogo,
+  PolygonLogo,
+} from '../ui/chain-logos';
 
-const ACCENTS: Record<string, string> = {
-  eth: '#627EEA',
-  base: '#1C5CFF',
-  arbitrum: '#28A0F0',
-  polygon: '#8247E5',
-  testnet: '#F2A900',
-  local: '#8390AA',
-};
+/** Maps a network to its official SVG logo component. */
+function NetworkLogo({ network, size }: { network: Network; size: number }) {
+  // Exact network ID match first (most specific)
+  switch (network.id) {
+    case 'eth-mainnet':    return <EthereumLogo size={size} />;
+    case 'base':           return <BaseLogo size={size} />;
+    case 'base-sepolia':   return <BaseLogo size={size} />;
+    case 'arbitrum':       return <ArbitrumLogo size={size} />;
+    case 'arbitrum-sepolia': return <ArbitrumLogo size={size} />;
+    case 'polygon':        return <PolygonLogo size={size} />;
+    case 'amoy':           return <PolygonLogo size={size} />;
+    case 'btc-mainnet':    return <BitcoinLogo size={size} />;
+    case 'btc-testnet4':   return <BitcoinLogo size={size} />;
+    case 'hedera-testnet': return <HederaLogo size={size} />;
+    case 'sepolia':        return <EthereumLogo size={size} />;
+  }
+  // Family-level fallback
+  switch (network.family) {
+    case 'evm':     return <EthereumLogo size={size} />;
+    case 'bitcoin': return <BitcoinLogo size={size} />;
+    case 'hedera':  return <HederaLogo size={size} />;
+  }
+}
 
 export function NetworkDot({ network, size = 18 }: { network: Network; size?: number }) {
-  return (
-    <span
-      aria-hidden
-      className="inline-flex shrink-0 items-center justify-center rounded-full text-[9px] font-bold text-white"
-      style={{ width: size, height: size, background: ACCENTS[network.accent] ?? '#5A6782' }}
-    >
-      {network.shortName.slice(0, 1)}
-    </span>
-  );
+  return <NetworkLogo network={network} size={size} />;
 }
 
 const GROUPS: { kind: Network['kind']; label: string }[] = [

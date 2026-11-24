@@ -31,6 +31,10 @@ func (s *Store) SecurityEvents() store.SecurityEvents { return &securityEventsRe
 func (s *Store) AuditLogs() store.AuditLogs           { return &auditLogsRepo{pool: s.pool} }
 func (s *Store) Idempotency() store.Idempotency       { return &idempotencyRepo{pool: s.pool} }
 
+func (s *Store) SharedWallets() store.SharedWallets { return &sharedRepo{pool: s.pool} }
+
+func (s *Store) ChainIndex() store.ChainIndex { return &chainIndexRepo{pool: s.pool} }
+
 func (s *Store) Close() { s.pool.Close() }
 
 var _ store.Store = (*Store)(nil)

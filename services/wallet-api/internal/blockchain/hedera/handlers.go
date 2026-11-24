@@ -51,3 +51,32 @@ func (h *Handlers) GetBalance(w http.ResponseWriter, r *http.Request) {
 		"hbar":      balance.HbarDisplay,
 	})
 }
+
+// GetHistory implements GET /v1/hedera/{network}/account/{accountId}/history.
+// Only "testnet" is supported in this phase; any other value returns 404. The
+// optional ?cursor= query param pages through older transactions.
+func (h *Handlers) GetHistory(w http.ResponseWriter, r *http.Request) {
+	network := chi.URLParam(r, "network")
+	if network != "testnet" {
+		httpx.NotFound(w, r, "NOT_FOUND", "")
+		return
+	}
+
+	accountID := chi.URLParam(r, "accountId")
+	cursor := r.URL.Query().Get("cursor")
+
+	page, err := h.svc.GetTransactionHistory(r.Context(), accountID, cursor)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidAccountID):
+			httpx.BadRequest(w, r, "INVALID_ACCOUNT_ID", "account id must be in shard.realm.num format")
+		case errors.Is(err, ErrAccountNotFound):
+			httpx.NotFound(w, r, "NOT_FOUND", "account not found")
+		default:
+			serviceUnavailable(w, r, "MIRROR_NODE_ERROR", "mirror node unavailable")
+		}
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusOK, page)
+}

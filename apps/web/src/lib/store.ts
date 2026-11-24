@@ -4,6 +4,7 @@ import { createJSONStorage, persist } from 'zustand/middleware';
 import type { BitcoinAddressType } from '@qd/blockchain';
 import type { TxStatus } from '@qd/shared-types';
 import type { HDAccountMeta } from '@qd/wallet-core';
+import { withLinkedHederaAccount } from './hedera-link';
 
 /**
  * Non-secret wallet metadata (names, public addresses, preferences). Persisted in
@@ -124,7 +125,7 @@ export const useMeta = create<MetaState>()(
       setBtcWatchRegistered: (key, registered) =>
         set((s) => ({ btcWatchRegistered: { ...s.btcWatchRegistered, [key]: registered } })),
       setHederaAccountId: (hdIndex, accountId) =>
-        set((s) => ({ hederaAccountIds: { ...s.hederaAccountIds, [hdIndex]: accountId } })),
+        set((s) => ({ hederaAccountIds: withLinkedHederaAccount(s.hederaAccountIds, hdIndex, accountId) })),
       // Network choice and custom RPCs are device preferences, not wallet data:
       // creating or restoring a wallet must not silently move the user to another chain.
       reset: () => set((s) => ({ ...initial, networkId: s.networkId, customRpc: s.customRpc })),

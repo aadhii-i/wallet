@@ -43,6 +43,7 @@ import { Skeleton } from '@/components/ui/spinner';
 import { NetworkDot } from '@/components/wallet/network-sheet';
 import { stepVariants, t } from '@/components/ui/motion';
 import { BitcoinSendFlow } from './bitcoin-send-flow';
+import { HederaSendFlow } from './hedera-send-flow';
 
 type Step = 'asset' | 'recipient' | 'amount' | 'review';
 const ORDER: Step[] = ['asset', 'recipient', 'amount', 'review'];
@@ -59,6 +60,7 @@ export function SendFlow() {
   // Bitcoin payloads are PSBTs, and its review screen prices in sat/vB, so it has
   // its own flow. Both branches share the same worker confirmation model.
   if (network.family === 'bitcoin') return <BitcoinSendFlow network={network} />;
+  if (network.family === 'hedera') return <HederaSendFlow />;
   if (network.family === 'evm') return <EvmSendFlow network={network} />;
   return null;
 }

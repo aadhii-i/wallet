@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/ethereum/go-ethereum v1.17.6
-	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/prometheus/client_golang v1.24.1
@@ -35,8 +35,9 @@ require (
 	github.com/sethvargo/go-retry v0.4.0 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 )

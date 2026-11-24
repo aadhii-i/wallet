@@ -58,6 +58,12 @@ type Provider struct {
 	// serve Mainnet balances labelled as Sepolia.
 	chainVerified bool
 	wrongChain    bool
+
+	// bgLimiter paces background calls (nil: unlimited). cooldownUntil is
+	// set by an HTTP 429; cooldownStep is the current cooldown length.
+	bgLimiter     *rate.Limiter
+	cooldownUntil time.Time
+	cooldownStep  time.Duration
 }
 
 func newProvider(name, url string, logger *slog.Logger) *Provider {
@@ -89,10 +95,16 @@ var heavyClientMethods = map[string]struct{}{
 
 // shouldCountAsProviderFailure decides whether err, encountered while
 // calling method, should be recorded against the provider's circuit
-// breaker. Only a context-deadline timeout on a heavy, client-parameterized
-// method is excluded; everything else (connection errors, non-2xx, decode
-// failures, timeouts on other methods) counts as before.
+// breaker. Excluded: the client cancelling its own request (it navigated
+// away or closed the tab, which says nothing about the upstream), and a
+// context-deadline timeout on a heavy, client-parameterized method. Local
+// quota exhaustion and upstream throttling also leave the circuit intact.
+// Everything else (connection errors, non-2xx, decode failures, timeouts on
+// other methods) counts as before.
 func shouldCountAsProviderFailure(err error, method string) bool {
+	if errors.Is(err, context.Canceled) || IsRateLimited(err) {
+		return false
+	}
 	if _, heavy := heavyClientMethods[method]; heavy && errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
@@ -136,6 +148,7 @@ func (p *Provider) recordSuccess() {
 	defer p.mu.Unlock()
 	p.consecutiveFails = 0
 	p.state = circuitClosed
+	p.cooldownStep = 0
 }
 
 func (p *Provider) recordFailure() {
@@ -186,14 +199,19 @@ type rpcEnvelope struct {
 }
 
 type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // call sends one JSON-RPC request to the provider with the given timeout.
 func (p *Provider) call(ctx context.Context, chainIDLabel string, req rpcEnvelope, timeout time.Duration) (*rpcEnvelope, error) {
 	if !p.limiter.Allow() {
-		return nil, fmt.Errorf("rpc: provider %s rate limited", p.Name)
+		wait := backoffBase
+		if limit := p.limiter.Limit(); limit > 0 {
+			wait = time.Duration(float64(time.Second) / float64(limit))
+		}
+		return nil, &RateLimitedError{Provider: p.Name, RetryAfter: wait, Local: true}
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -227,6 +245,19 @@ func (p *Provider) call(ctx context.Context, chainIDLabel string, req rpcEnvelop
 		return nil, fmt.Errorf("rpc: provider %s: %w", p.Name, cause)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		p.noteRateLimited(retryAfter)
+		metrics.RPCUpstreamErrors.WithLabelValues(chainIDLabel, p.Name, req.Method, "rate_limited").Inc()
+		p.logger.Warn("rpc upstream rate limited",
+			slog.String("provider", p.Name),
+			slog.String("chain_id", chainIDLabel),
+			slog.String("method", req.Method),
+			slog.Int("status", resp.StatusCode),
+			slog.Duration("cooldown", p.coolingFor()),
+		)
+		return nil, &RateLimitedError{Provider: p.Name, RetryAfter: retryAfter}
+	}
 	if resp.StatusCode >= 300 {
 		metrics.RPCUpstreamErrors.WithLabelValues(chainIDLabel, p.Name, req.Method, "http_status").Inc()
 		p.logger.Error("rpc upstream returned non-2xx",
@@ -249,6 +280,7 @@ func (p *Provider) call(ctx context.Context, chainIDLabel string, req rpcEnvelop
 type Pool struct {
 	chainID   int64
 	providers []*Provider
+	reads     readShare
 }
 
 // NewPool builds a provider pool for one chain. logger may be nil, in which
@@ -271,14 +303,21 @@ type Upstream struct {
 func (p *Pool) chainLabel() string { return strconv.FormatInt(p.chainID, 10) }
 
 // candidates returns providers in priority order, skipping open-circuit
-// ones, for a read method's failover attempts.
+// ones, for a read method's failover attempts. Providers cooling down after
+// an HTTP 429 come last.
 func (p *Pool) candidates() []*Provider {
 	out := make([]*Provider, 0, len(p.providers))
+	var cooling []*Provider
 	for _, prov := range p.providers {
 		if prov.allowRequest() {
-			out = append(out, prov)
+			if prov.coolingFor() > 0 {
+				cooling = append(cooling, prov)
+			} else {
+				out = append(out, prov)
+			}
 		}
 	}
+	out = append(out, cooling...)
 	if len(out) == 0 {
 		// Every circuit is open: still try the providers so the system
 		// fails loudly rather than refusing all traffic silently -- but
@@ -334,6 +373,9 @@ func (p *Pool) checkHealthOnce(ctx context.Context) {
 		}
 		req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "eth_blockNumber"}
 		resp, err := prov.call(ctx, p.chainLabel(), req, 3*time.Second)
+		if IsRateLimited(err) {
+			continue // Admission pressure does not establish that the node is unhealthy.
+		}
 		if err != nil || resp.Error != nil {
 			prov.recordFailure()
 			prov.setHealth(false, 0)
@@ -377,7 +419,13 @@ func (p *Pool) verifyChain(ctx context.Context, prov *Provider) bool {
 	}
 	req := rpcEnvelope{JSONRPC: "2.0", ID: json.RawMessage("1"), Method: "eth_chainId"}
 	resp, err := prov.call(ctx, p.chainLabel(), req, 3*time.Second)
-	if err != nil || resp.Error != nil {
+	if err != nil {
+		if shouldCountAsProviderFailure(err, req.Method) {
+			prov.recordFailure()
+		}
+		return false
+	}
+	if resp.Error != nil {
 		prov.recordFailure()
 		return false
 	}

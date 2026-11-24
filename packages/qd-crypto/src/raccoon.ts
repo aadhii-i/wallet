@@ -57,16 +57,19 @@ export interface Signature {
 
 const aCache = new Map<string, NttPoly[][]>();
 
+/** A ∈ R_q^{k×ℓ} in the coefficient domain: A_ij = Xof("QD-A", seedA, [i, j]).uniformPoly(). */
+export function expandACoefficients(seedA: Uint8Array): Poly[][] {
+  return Array.from({ length: K }, (_, i) =>
+    Array.from({ length: L }, (_, j) => new Xof('QD-A', seedA, new Uint8Array([i, j])).uniformPoly()),
+  );
+}
+
 /** A ∈ R_q^{k×ℓ}, expanded from its seed with SHAKE256, in the NTT domain. */
 export function expandA(seedA: Uint8Array): NttPoly[][] {
   const key = bytesToHex(seedA);
   const hit = aCache.get(key);
   if (hit) return hit;
-  const A = Array.from({ length: K }, (_, i) =>
-    Array.from({ length: L }, (_, j) =>
-      toNtt(new Xof('QD-A', seedA, new Uint8Array([i, j])).uniformPoly()),
-    ),
-  );
+  const A = expandACoefficients(seedA).map((row) => row.map(toNtt));
   if (aCache.size > 32) aCache.clear();
   aCache.set(key, A);
   return A;

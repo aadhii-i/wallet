@@ -61,6 +61,13 @@ function fakeApi(opts: { originInMessage?: string; knownDevice?: boolean } = {})
         if (body.method === 'eth_blockNumber') return reply(200, { jsonrpc: '2.0', id: body.id, result: '0x10' });
         return reply(200, { jsonrpc: '2.0', id: body.id, error: { code: -32601, message: 'method not allowed' } });
       default:
+        if (init?.method === 'PUT' && url.pathname.startsWith('/v1/accounts/') && url.pathname.endsWith('/addresses')) {
+          return reply(200, {
+            id: 'addr-1',
+            networkFamily: body.networkFamily,
+            address: body.address,
+          });
+        }
         return reply(404, { title: 'nf', status: 404, code: 'NOT_FOUND' });
     }
   };
@@ -135,5 +142,24 @@ describe('ApiClient', () => {
   it('builds the exact address-proof message', () => {
     expect(ApiClient.addressProofMessage('acc', '0xABC', 'user')).toBe('QDWallet-Address|v1|acc|0xabc|user');
     expect(new ApiError(404, 'NOT_FOUND').status).toBe(404);
+  });
+
+  it('sends network, addressType, and proof in the Bitcoin registration body', async () => {
+    const api = fakeApi({ knownDevice: true });
+    const c = await client(api);
+    await c.ensureSession();
+
+    await c.registerBtcAddress('acc-1', 'testnet4', 'tb1qexample', 'p2wpkh', '0xdeadbeef');
+
+    const put = api.calls.find(
+      (x) => x.method === 'PUT' && x.path === '/v1/accounts/acc-1/addresses',
+    );
+    expect(put?.body).toStrictEqual({
+      networkFamily: 'bitcoin',
+      network: 'testnet4',
+      address: 'tb1qexample',
+      addressType: 'p2wpkh',
+      proof: '0xdeadbeef',
+    });
   });
 });

@@ -15,7 +15,7 @@ const (
 	Issuer         = "wallet-api"
 	Audience       = "wallet-api"
 	AccessTokenTTL = 10 * time.Minute
-	SigningKeyID   = "access-token-signing-key"
+	SigningKeyID   = security.AccessTokenSigningKeyID
 )
 
 // AccessClaims are the JWT claims for the access token, per spec §22.

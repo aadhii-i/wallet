@@ -44,9 +44,11 @@ tags:
   - name: devices
   - name: wallets
   - name: chain
+  - name: bitcoin
   - name: transactions
   - name: security
   - name: public
+  - name: shared-wallets
 paths:
   /v1/auth/challenge:
     post:
@@ -321,6 +323,116 @@ paths:
                   items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
                   nextCursor: { type: string }
 
+  /v1/btc/{network}/fees:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+    get:
+      tags: [bitcoin]
+      operationId: btcFees
+      description: |
+        Fee estimates from the operator's Bitcoin Core node, in sat/vB, already
+        clamped to the server's configured floor and ceiling.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Fee estimates
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fees]
+                properties:
+                  fees: { $ref: "#/components/schemas/BtcFees" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/address/{address}/utxos:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: address, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [bitcoin]
+      operationId: btcUtxos
+      description: Spendable outputs paying `address`, queried from the Esplora blockchain index.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Unspent outputs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [utxos]
+                properties:
+                  utxos: { type: array, items: { $ref: "#/components/schemas/BtcUtxo" } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/address/{address}/history:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: address, in: path, required: true, schema: { type: string } }
+      - { name: cursor, in: query, schema: { type: string } }
+    get:
+      tags: [bitcoin]
+      operationId: btcHistory
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Address history
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
+                  nextCursor: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/tx/{hash}:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: hash, in: path, required: true, schema: { type: string, pattern: "^[0-9a-fA-F]{64}$" } }
+    get:
+      tags: [bitcoin]
+      operationId: btcTransaction
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Transaction lookup
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BtcTransaction" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/broadcast:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+    post:
+      tags: [bitcoin]
+      operationId: btcBroadcast
+      description: Broadcasts a signed raw transaction through the operator's Bitcoin Core node.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [raw]
+              properties:
+                raw: { type: string, description: "raw transaction hex, no 0x prefix" }
+      responses:
+        "200":
+          description: Accepted by the mempool
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [txid]
+                properties:
+                  txid: { type: string }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+
   /v1/rpc/evm/{chainId}:
     parameters:
       - { name: chainId, in: path, required: true, schema: { type: integer } }
@@ -427,6 +539,27 @@ paths:
                 required: [networks]
                 properties:
                   networks: { type: array, items: { $ref: "#/components/schemas/Network" } }
+  /v1/relayers:
+    get:
+      tags: [public]
+      operationId: relayerStatus
+      description: |
+        Shared-wallet relayer diagnostics per chain with an RPC upstream or a relayer key: RPC reachability and
+        chain id, relayer address and balance, deterministic deployer and QD contract deployment, and the Gas
+        Service Account funding view (gas prices, health, pending requirement, capacity). Cached for 10 s;
+        `refresh=1` (the UI's "Refresh balance") accepts a result up to 3 s old. Public data only; never key material.
+      parameters:
+        - { name: refresh, in: query, required: false, schema: { type: string, enum: ["1"] } }
+      responses:
+        "200":
+          description: Relayer status per chain
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chains]
+                properties:
+                  chains: { type: array, items: { $ref: "#/components/schemas/RelayerChainStatus" } }
   /v1/prices:
     get:
       tags: [public]
@@ -451,6 +584,659 @@ paths:
   /readyz:
     get: { tags: [public], operationId: readyz, responses: { "200": { description: Ready }, "503": { description: Not ready } } }
 
+  /v1/shared-wallets:
+    get:
+      tags: [shared-wallets]
+      operationId: listSharedWallets
+      description: Shared wallets in which the caller is an active participant.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { wallets: { type: array, items: { $ref: "#/components/schemas/SharedWallet" } } } } } } }
+    post:
+      tags: [shared-wallets]
+      operationId: createSharedWallet
+      description: Creates a shared wallet with the caller as owner participant, bound to the calling device key. Default policy is ceil(N/2).
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+                displayName: { type: string, maxLength: 64 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/SharedWallet" } } } }
+  /v1/shared-wallets/{walletId}:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: getSharedWallet
+      description: Participants, policy, accounts; invitations for the owner only. 404 for non-participants.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SharedWallet" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/authorization-policy:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: getAuthorizationPolicy
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/AuthorizationPolicy" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/invitations:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: createInvitation
+      description: Owner only. Returns a one-time code exactly once; the server stores only its SHA-256. Expires after 72 h.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: []
+              properties:
+                label: { type: string, maxLength: 64 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { type: object, properties: { id: { type: string, format: uuid }, code: { type: string }, label: { type: string }, status: { type: string }, expiresAt: { type: string, format: date-time } } } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/invitations/{invitationId}/revoke:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: revokeInvitation
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "204": { description: Revoked }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/participants/{participantId}/revoke:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: participantId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: revokeParticipant
+      description: Owner revokes a member, or a member leaves. Bumps membershipVersion, supersedes open proposals and sets keyStatus to rekey_required if a key was active.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: Revoked, content: { application/json: { schema: { type: object, properties: { membershipVersion: { type: integer }, keyStatus: { type: string } } } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/accounts:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: createSharedAccount
+      description: Adds a QD account (next derivation index). Does not create a participant. No Ethereum address exists until a Raccoon verifier is deployed.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 64 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/SharedAccount" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/proposals:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: listProposals
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { proposals: { type: array, items: { $ref: "#/components/schemas/Proposal" } } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [shared-wallets]
+      operationId: createProposal
+      description: |
+        Creates an immutable proposal with a frozen policy and participant snapshot.
+        digest = SHA-256 of the canonical string documented in docs/architecture/shared-wallet-authorization.md.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [accountId, chainId, to, valueWei, nonce, gasLimit, maxFeePerGas, maxPriorityFeePerGas]
+              properties:
+                accountId: { type: string, format: uuid }
+                chainId: { type: integer, minimum: 1 }
+                to: { type: string, pattern: "^0x[0-9a-fA-F]{40}$" }
+                valueWei: { type: string, pattern: "^(0|[1-9][0-9]{0,77})$" }
+                data: { type: string, pattern: "^0x([0-9a-fA-F]{2})*$" }
+                nonce: { type: integer, minimum: 0 }
+                gasLimit: { type: integer, minimum: 1, maximum: 30000000 }
+                maxFeePerGas: { type: string }
+                maxPriorityFeePerGas: { type: string }
+                ttlSeconds: { type: integer, minimum: 300, maximum: 604800 }
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/Proposal" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallet-invitations/preview:
+    post:
+      tags: [shared-wallets]
+      operationId: previewInvitation
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { type: object, properties: { walletId: { type: string }, walletName: { type: string }, invitedBy: { type: string }, activeParticipants: { type: integer }, expiresAt: { type: string } } } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallet-invitations/accept:
+    post:
+      tags: [shared-wallets]
+      operationId: acceptInvitation
+      description: Joins as a participant bound to the calling user and device key (taken from the session, never the body).
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: { type: string }
+                displayName: { type: string, maxLength: 64 }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SharedWallet" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallet-invitations/reject:
+    post:
+      tags: [shared-wallets]
+      operationId: rejectInvitation
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        "204": { description: Rejected }
+        "400": { $ref: "#/components/responses/Problem" }
+  /v1/proposals/{proposalId}:
+    parameters:
+      - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: getProposal
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Proposal" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/history:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: chainId, in: query, required: true, schema: { type: integer } }
+    get:
+      tags: [shared-wallets]
+      operationId: sharedWalletHistory
+      description: |
+        Wallet History: every transfer from or to this wallet's smart accounts on one chain, from the chain index
+        (receipts and logs; never proposals or client state), newest first. Includes incoming transfers, ERC-20
+        transfers, executions whose call reverted (`kind: qd_execute`, `success: false`) and reverted outer
+        transactions. Executions are linked to their proposal. Members only; the addresses are indexed on request.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chainId, network, addresses, items, coverage, index]
+                properties:
+                  chainId: { type: integer }
+                  network: { type: string }
+                  addresses: { type: array, items: { type: string }, description: "always an array (empty before an account address exists)" }
+                  index:
+                    type: object
+                    required: [state]
+                    description: Whether the chain could be read for this request; stored history is returned in every state.
+                    properties:
+                      state: { type: string, enum: [ok, indexing, rpc_unavailable, rpc_error, disabled] }
+                      error: { type: string, description: "rpc_error only; RPC URLs removed" }
+                  items: { type: array, items: { $ref: "#/components/schemas/WalletHistoryItem" } }
+                  coverage:
+                    type: object
+                    additionalProperties: { type: object, properties: { sinceBlock: { type: integer }, scannedThroughBlock: { type: integer } } }
+        "400": { description: "INVALID_QUERY (chainId missing or not a positive integer) or UNSUPPORTED_NETWORK (not served by this API)", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+        "404": { description: "NOT_FOUND: unknown wallet, malformed wallet id, or the caller is not a participant", content: { application/problem+json: { schema: { $ref: "#/components/schemas/Problem" } } } }
+  /v1/proposals/{proposalId}/gas-estimate:
+    parameters:
+      - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: proposalGasEstimate
+      description: |
+        What executing the proposal requires now, from the relayer's own preflight against the chain: remaining
+        one-time setup, gas upper bound, the gas service (relayer) and shared-account balances, shortfalls and
+        whether execution can proceed. Read-only: sends nothing and never changes the approved transaction.
+        Members of the proposal's wallet only.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/GasEstimate" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /v1/gas-service/{chainId}/history:
+    parameters:
+      - { name: chainId, in: path, required: true, schema: { type: integer } }
+      - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 1000, default: 200 } }
+    get:
+      tags: [shared-wallets]
+      operationId: gasServiceHistory
+      description: |
+        The chain's gas service account history, newest first, from chain receipts: incoming recharges and outgoing
+        gas payments (one-time setup, executions). `proposalId` is included only for proposals of wallets the caller
+        belongs to. Recharges are found by bisecting the account's historical balance and nonce from
+        `historyAvailableSinceBlock` (needs an archive-capable RPC; otherwise history starts when the API started).
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [chainId, address, transfers]
+                properties:
+                  chainId: { type: integer }
+                  address: { type: string }
+                  scannedThroughBlock: { type: integer, nullable: true }
+                  historyAvailableSinceBlock: { type: integer, nullable: true }
+                  transfers: { type: array, items: { $ref: "#/components/schemas/GasTransfer" } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/proposals/{proposalId}/vote-nonce:
+    parameters:
+      - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: issueVoteNonce
+      description: Single-use nonce bound to this participant and proposal, valid 2 minutes.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { type: object, properties: { nonce: { type: string }, participantId: { type: string, format: uuid }, expiresAt: { type: string } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/proposals/{proposalId}/votes:
+    parameters:
+      - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: castVote
+      description: |
+        Approve or reject. `signature` is IEEE P1363 P-256 (base64url) by the participant's registered device key over
+        `QDWallet-Vote|v1|{decision}|{proposalId}|{walletId}|{digestHex}|{policyVersion}|{membershipVersion}|{participantId}|{nonce}|{issuedAt}`.
+        Counting and the threshold transition are atomic; the signing job is created exactly once.
+        Errors: VOTE_NONCE_INVALID, VOTE_SIGNATURE_INVALID, DIGEST_MISMATCH, DUPLICATE_VOTE, PROPOSAL_CLOSED, NOT_ELIGIBLE, WRONG_DEVICE.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [decision, nonce, issuedAt, digest, signature]
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+                nonce: { type: string }
+                issuedAt: { type: integer, description: Unix seconds, within 5 minutes of server time }
+                digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                signature: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Proposal" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/accounts/{accountId}/key:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: registerAccountKey
+      description: |
+        Register (or attest) the account's Raccoon public key pk_j (5152 bytes, base64url), derived by the caller's key worker from
+        its share. The QdAccount address is CREATE2(factory, keccak256("QD-VK-v1" ‖ pk_j)). `signature` (P-256, bound device) is over
+        `QDWallet-AccountKey|v1|{walletId}|{accountId}|{derivationIndex}|{keygenId}|{publicKeyHashHex}|{address}`.
+        A different key than the one registered is refused (ACCOUNT_KEY_MISMATCH) and audited.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [publicKey, signature]
+              properties: { publicKey: { type: string }, signature: { type: string } }
+      responses:
+        "200": { description: Account key with attestations }
+        "400": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+    get:
+      tags: [shared-wallets]
+      operationId: getAccountKey
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: "Account key including publicKey (base64url)" }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/proposals/{proposalId}/signing-sessions:
+    parameters:
+      - { name: proposalId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: startSigning
+      description: |
+        Selected signers only (bound device). Opens the proposal's signing session with a fresh random 32-byte sid, or returns the
+        open (or completed) one. Errors: NOT_SELECTED_SIGNER, SIGNING_NOT_READY, SIGNING_ATTEMPTS_EXHAUSTED, PROPOSAL_EXPIRES_TOO_SOON, PROPOSAL_CLOSED.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SigningSession" } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/signing-sessions/{sessionId}:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: getSigningSession
+      description: Wallet participants only. Payloads of the previous round are included (all rounds with ?payloads=all). Cache-Control no-store.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: payloads, in: query, required: false, schema: { type: string, enum: [all] } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SigningSession" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/signing-sessions/{sessionId}/rounds/{round}:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: round, in: path, required: true, schema: { type: integer, minimum: 1, maximum: 3 } }
+    post:
+      tags: [shared-wallets]
+      operationId: submitSigningRound
+      description: |
+        One selected signer's message for the current round (fixed-size encodings from qd-crypto). `signature` (P-256, bound device) is over
+        `QDWallet-SignRound|v1|{sessionId}|{round}|{partyIndex}|{participantId}|{transcriptHash}|{sha256(payload)}`, where transcriptHash
+        = SHA-256 of the session header and every earlier round message. Round-2 openings are checked against round-1 commitments; after
+        round 3 the coordinator combines and verifies the signature. Errors: SIGNING_SESSION_CLOSED, DUPLICATE_ROUND_MESSAGE,
+        TRANSCRIPT_MISMATCH, ROUND_MESSAGE_INVALID, NOT_SELECTED_SIGNER, SIGNATURE_INVALID, WRONG_DEVICE.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [payload, transcriptHash, signature]
+              properties: { payload: { type: string }, transcriptHash: { type: string, pattern: "^[0-9a-f]{64}$" }, signature: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SigningSession" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/signing-sessions/{sessionId}/abort:
+    parameters:
+      - { name: sessionId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: abortSigning
+      description: "A selected signer ends a session it cannot complete. signature over QDWallet-SignAbort|v1|{sessionId}|{participantId}|{reason}."
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason, signature]
+              properties: { reason: { type: string, enum: [cancelled, participant_abort, signer_state_lost] }, signature: { type: string } }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/SigningSession" } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: startKeyGeneration
+      description: |
+        Owner only, from their bound device, which becomes the trusted dealer. Freezes the active participants (party
+        indices 1..N in join order), T = ceil(N × policy) and the membership version. Any join or revocation fails it.
+        Errors: FORBIDDEN, WRONG_DEVICE, KEYGEN_IN_PROGRESS, KEY_ALREADY_INITIALIZED.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "201": { description: Created, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/current:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: currentKeyGeneration
+      description: Newest ceremony (an expired open ceremony is failed on read). Never contains envelopes.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/{keygenId}/encryption-key:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: keygenId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: registerEncryptionKey
+      description: |
+        Registers this participant's per-ceremony X-Wing public key (1216 bytes, base64url), once. `signature` is P1363
+        P-256 by the bound device over `QDWallet-KeygenKey|v1|{walletId}|{keygenId}|{participantId}|{partyIndex}|{membershipVersion}|{sha256Hex(publicKey)}`.
+        The last registration moves the ceremony to `dealing`. Errors: SIGNATURE_INVALID, ALREADY_REGISTERED, KEYGEN_NOT_OPEN, WRONG_DEVICE.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [publicKey, signature]
+              properties:
+                publicKey: { type: string }
+                signature: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/{keygenId}/envelopes/{participantId}:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: keygenId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: participantId, in: path, required: true, schema: { type: string, format: uuid } }
+    put:
+      tags: [shared-wallets]
+      operationId: stageEnvelope
+      description: |
+        Dealer only, while `dealing`. One opaque HPKE envelope (X-Wing / HKDF-SHA256 / AES-256-GCM) per request:
+        `enc` is 1120 bytes, `ct` at most 40 KiB (base64url). Replaces a previously staged envelope until committed.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [fingerprint, enc, ct]
+              properties:
+                fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+                enc: { type: string }
+                ct: { type: string }
+      responses:
+        "204": { description: Staged }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/{keygenId}/commit:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: keygenId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: commitDeal
+      description: |
+        Dealer only. Requires one staged envelope per party, all under `fingerprint`. `signature` is by the dealer device over
+        `QDWallet-KeygenDeal|v1|{walletId}|{keygenId}|{membershipVersion}|{T}|{N}|{fingerprint}|{envelopesDigest}`, where
+        envelopesDigest = SHA-256 of `{partyIndex}:{participantId}:{sha256Hex(enc‖ct)}` lines ordered by index and joined by `;`.
+        Errors: KEYGEN_INCOMPLETE, SIGNATURE_INVALID, KEYGEN_NOT_OPEN.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [fingerprint, signature]
+              properties:
+                fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+                signature: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/{keygenId}/envelope:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: keygenId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      operationId: myKeygenEnvelope
+      description: "The caller's own envelope only, from its bound device, until acknowledged. Errors ALREADY_PROVISIONED, KEYGEN_NOT_OPEN, WRONG_DEVICE."
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  walletId: { type: string, format: uuid }
+                  keygenId: { type: string, format: uuid }
+                  participantId: { type: string, format: uuid }
+                  partyIndex: { type: integer }
+                  threshold: { type: integer }
+                  parties: { type: integer }
+                  membershipVersion: { type: integer }
+                  fingerprint: { type: string }
+                  enc: { type: string }
+                  ct: { type: string }
+                  envelopeHash: { type: string }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/{keygenId}/acknowledge:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: keygenId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: acknowledgeShare
+      description: |
+        Sent after the device decrypted, verified and stored its share. `signature` over
+        `QDWallet-KeygenAck|v1|{walletId}|{keygenId}|{participantId}|{partyIndex}|{T}|{N}|{membershipVersion}|{fingerprint}|{sha256Hex(enc‖ct)}`.
+        Deletes the envelope. The N-th acknowledgement completes the ceremony and activates the wallet key atomically.
+        Errors: FINGERPRINT_MISMATCH, SIGNATURE_INVALID, ALREADY_PROVISIONED, KEYGEN_NOT_OPEN.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [fingerprint, signature]
+              properties:
+                fingerprint: { type: string, pattern: "^[0-9a-f]{64}$" }
+                signature: { type: string }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/key-generations/{keygenId}/fail:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: keygenId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      operationId: failKeyGeneration
+      description: "A party reports `decryption_failed` or `share_verification_failed`; the dealer may cancel (`cancelled`). Wipes all envelopes."
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [reason]
+              properties:
+                reason: { type: string, enum: [cancelled, decryption_failed, share_verification_failed] }
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
+        "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
     cookieAuth: { type: apiKey, in: cookie, name: __Host-qd_at }
@@ -473,6 +1259,155 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
   schemas:
+    SigningSession:
+      type: object
+      description: "Public signing transcript state. Never contains a key share."
+      properties:
+        id: { type: string, format: uuid }
+        attempt: { type: integer }
+        status: { type: string, enum: [round1, round2, round3, combining, complete, failed] }
+        round: { type: integer }
+        failureReason: { type: string }
+        signerPartyIndexes: { type: array, items: { type: integer } }
+        signerParticipantIds: { type: array, items: { type: string, format: uuid } }
+        sid: { type: string }
+        message: { type: string, description: QdAccount execution message (0x hex) }
+        accountAddress: { type: string }
+        publicKeyHash: { type: string }
+        header: { type: string }
+        transcriptHash: { type: string }
+        progress: { type: object }
+        messages: { type: array, items: { type: object } }
+        signature: { type: string, description: "base64url, 19494 bytes; present once combined and verified" }
+        signatureVerified: { type: boolean }
+        execution: { $ref: "#/components/schemas/Execution" }
+    Execution:
+      type: object
+      properties:
+        status: { type: string, enum: [not_started, pending, submitting, submitted, confirmed, failed] }
+        chainId: { type: integer }
+        accountAddress: { type: string }
+        lastError: { type: string }
+        relayer: { type: string }
+        txHash: { type: string }
+        blockNumber: { type: integer }
+        gasUsed: { type: integer }
+        callSuccess: { type: boolean }
+        stage:
+          type: string
+          description: What the relayer is doing or waiting for.
+          enum: [queued, checking_relayer, relayer_unavailable, insufficient_account_funds, insufficient_relayer_funds,
+                 setting_up_verifier, preparing_account, waiting_nonce, submitting, submitted, confirmed, failed, expired]
+        setupTxs: { type: array, items: { type: string }, description: One-time setup transactions mined successfully, in order }
+        setupAttempts: { type: integer, description: Setup transactions that were mined and reverted (max 3, 5 minutes apart) }
+        pendingSetupTx: { type: string }
+        nextAttemptAt: { type: string, format: date-time }
+        txNonce: { type: integer, description: Relayer transaction nonce of the execute transaction }
+        effectiveGasPrice: { type: string, description: wei, decimal, from the receipt }
+        blockTime: { type: string, format: date-time, description: Block timestamp }
+        executedTo: { type: string, description: From QdAccount.Executed }
+        executedValue: { type: string, description: wei, decimal, from QdAccount.Executed }
+    RelayerChainStatus:
+      type: object
+      description: Relayer diagnostics for one chain. Never contains key material.
+      properties:
+        chainId: { type: integer }
+        rpcConfigured: { type: boolean }
+        rpcOk: { type: boolean }
+        rpcChainId: { type: integer }
+        relayerConfigured: { type: boolean }
+        relayerAddress: { type: string }
+        relayerBalanceWei: { type: string }
+        deployerPresent: { type: boolean }
+        verifierAddress: { type: string }
+        verifierDeployed: { type: boolean }
+        factoryAddress: { type: string }
+        factoryDeployed: { type: boolean }
+        ready: { type: boolean }
+        problems: { type: array, items: { type: string } }
+        blockNumber: { type: integer }
+        baseFeeWei: { type: string }
+        tipWei: { type: string }
+        gasPriceWei: { type: string, description: "base fee + tip: what a transaction pays per gas now" }
+        feeCapWei: { type: string, description: "fee cap the relayer signs with (3 × base fee + tip)" }
+        executionCostWei: { type: string, description: "upper bound for one execution of an already set-up wallet key" }
+        newWalletCostWei: { type: string, description: "upper bound for a new wallet key's one-time setup plus one execution" }
+        pendingOperations: { type: integer }
+        pendingRequiredWei: { type: string, description: "upper bound the relayer still has to pay for waiting executions" }
+        lowBalanceWei: { type: string, description: "GAS_LOW_BALANCE_WEI_<chainId>, or newWalletCostWei by default" }
+        lowBalanceConfigured: { type: boolean }
+        shortfallWei: { type: string }
+        executionsCovered: { type: integer }
+        health: { type: string, enum: [healthy, low, insufficient, unknown] }
+        healthMessage: { type: string }
+        checkedAt: { type: string, format: date-time }
+        scannedThroughBlock: { type: integer }
+        historyAvailableSinceBlock: { type: integer }
+    WalletHistoryItem:
+      type: object
+      required: [txHash, logIndex, kind, direction, from, to, token, amount, success, blockNumber, blockTime]
+      properties:
+        txHash: { type: string, description: "\"internal:<block>:<address>\" for value received without a decodable transaction" }
+        logIndex: { type: integer, description: "-1 the transaction's own value; -2 internal; >= 0 the Executed, ERC-20 or EIP-7708 log" }
+        kind: { type: string, enum: [native, qd_execute, erc20, internal] }
+        direction: { type: string, enum: [sent, received, self] }
+        from: { type: string }
+        to: { type: string }
+        token: { type: string, description: "empty for the native coin" }
+        amount: { type: string, description: base units }
+        success: { type: boolean, description: "receipt status 1 and, for qd_execute, Executed.success" }
+        status: { type: string, enum: [confirmed, failed] }
+        explorerUrl: { type: string, description: "block explorer page (absent for local chains and internal transfers)" }
+        txFrom: { type: string, description: "who sent the transaction and paid gas" }
+        txTo: { type: string }
+        blockNumber: { type: integer }
+        blockTime: { type: string, format: date-time }
+        gasUsed: { type: integer }
+        gasPriceWei: { type: string }
+        feeWei: { type: string }
+        proposalId: { type: string, format: uuid }
+    GasEstimate:
+      type: object
+      required: [chainId, checkedAt, rpcOk, relayerConfigured, relayerBalanceWei, accountAddress, accountDeployed, accountBalanceWei, transferWei, setupSteps, gasUnits, canProceed]
+      properties:
+        chainId: { type: integer }
+        checkedAt: { type: string, format: date-time }
+        rpcOk: { type: boolean }
+        relayerConfigured: { type: boolean }
+        relayerAddress: { type: string }
+        relayerBalanceWei: { type: string, nullable: true, description: "null: unavailable (not zero)" }
+        accountAddress: { type: string }
+        accountDeployed: { type: boolean, nullable: true }
+        accountBalanceWei: { type: string, nullable: true }
+        transferWei: { type: string }
+        setupSteps: { type: array, items: { type: string } }
+        gasUnits: { type: integer, description: "upper bound including 20 % gas-limit headroom" }
+        baseFeeWei: { type: string }
+        gasPriceWei: { type: string }
+        feeCapWei: { type: string }
+          requiredRelayerWei: { type: string, description: "gasUnits × fee cap plus additional fee reserve: what the gas service account must hold" }
+          estimatedFeeWei: { type: string, description: "gasUnits × current gas price plus additional fee reserve" }
+        additionalFeeReserveWei: { type: string, description: "L1 data and operator fee reserve, included in requiredRelayerWei and estimatedFeeWei" }
+        relayerShortfallWei: { type: string }
+        accountShortfallWei: { type: string }
+        canProceed: { type: boolean }
+        blocker: { type: string }
+    GasTransfer:
+      type: object
+      required: [txHash, direction, kind, valueWei, success, blockNumber, blockTime]
+      properties:
+        txHash: { type: string, description: "\"internal:<block>\" for a balance increase without a direct transaction" }
+        direction: { type: string, enum: [in, out] }
+        kind: { type: string, enum: [recharge, recharge_internal, setup, execute, other] }
+        counterparty: { type: string }
+        valueWei: { type: string }
+        gasUsed: { type: integer }
+        gasPriceWei: { type: string }
+        feeWei: { type: string }
+        success: { type: boolean }
+        blockNumber: { type: integer }
+        blockTime: { type: string, format: date-time }
+        proposalId: { type: string, format: uuid }
     Problem:
       type: object
       required: [title, status, code]
@@ -544,12 +1479,50 @@ components:
       required: [id, family, name, kind, nativeSymbol, nativeDecimals]
       properties:
         id: { type: string }
-        family: { type: string, enum: [evm, monero] }
+        family: { type: string, enum: [evm, bitcoin, monero] }
         chainId: { type: integer }
         name: { type: string }
         kind: { type: string, enum: [mainnet, testnet, local, unknown] }
         nativeSymbol: { type: string }
         nativeDecimals: { type: integer }
+    BtcFees:
+      type: object
+      required: [low, market, aggressive, tipHeight, quotedAt]
+      properties:
+        low: { type: number, description: "sat/vB" }
+        market: { type: number, description: "sat/vB" }
+        aggressive: { type: number, description: "sat/vB" }
+        tipHeight: { type: integer }
+        quotedAt: { type: string, format: date-time }
+    BtcUtxo:
+      type: object
+      required: [txid, vout, value, scriptPubKey, confirmations]
+      properties:
+        txid: { type: string }
+        vout: { type: integer }
+        value: { type: string, description: "satoshis, decimal string" }
+        scriptPubKey: { type: string, description: "hex" }
+        confirmations: { type: integer }
+        blockHeight: { type: integer }
+    BtcTransaction:
+      type: object
+      required: [txid, status, confirmations, value, inputs]
+      properties:
+        txid: { type: string }
+        status: { type: string, enum: [pending, confirmed, failed, replaced, dropped] }
+        confirmations: { type: integer }
+        blockHeight: { type: integer }
+        blockTime: { type: string, format: date-time }
+        fee: { type: string, description: "satoshis, decimal string" }
+        value: { type: string, description: "satoshis, decimal string" }
+        inputs:
+          type: array
+          items:
+            type: object
+            required: [value]
+            properties:
+              address: { type: string }
+              value: { type: string, description: "satoshis, decimal string" }
     Transaction:
       type: object
       required: [id, networkId, hash, from, to, assetId, amount, status, createdAt]
@@ -601,3 +1574,124 @@ components:
         deviceId: { type: string, format: uuid }
         createdAt: { type: string, format: date-time }
         metadata: { type: object }
+    AuthorizationPolicy:
+      type: object
+      properties:
+        version: { type: integer }
+        numerator: { type: integer }
+        denominator: { type: integer }
+        rounding: { type: string, enum: [ceil] }
+        membershipVersion: { type: integer }
+        activeParticipants: { type: integer }
+        requiredApprovals: { type: integer, description: "ceil(activeParticipants * numerator / denominator)" }
+        maxParticipants: { type: integer, description: Threshold Raccoon party limit (64) }
+    SharedParticipant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        displayName: { type: string }
+        role: { type: string, enum: [owner, member] }
+        status: { type: string, enum: [active, suspended, revoked] }
+        joinedAt: { type: string, format: date-time }
+        revokedAt: { type: string, format: date-time }
+    SharedAccount:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        derivationIndex: { type: integer }
+        address: { type: "null", description: No Ethereum address until an on-chain Raccoon verifier exists }
+        createdAt: { type: string, format: date-time }
+    KeyGenerationSummary:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [collecting_keys, dealing, awaiting_provisioning, complete, failed] }
+        failureReason: { type: string }
+        threshold: { type: integer }
+        parties: { type: integer }
+        membershipVersion: { type: integer }
+        dealerParticipantId: { type: string, format: uuid }
+        fingerprint: { type: [string, "null"], description: SHA3-256 master-key fingerprint (hex), set when envelopes are committed }
+        keysRegistered: { type: integer }
+        provisioned: { type: integer }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        endedAt: { type: string, format: date-time }
+    KeyGeneration:
+      allOf:
+        - { $ref: "#/components/schemas/KeyGenerationSummary" }
+        - type: object
+          properties:
+            participants:
+              type: array
+              items:
+                type: object
+                properties:
+                  participantId: { type: string, format: uuid }
+                  partyIndex: { type: integer }
+                  encryptionKey: { type: [string, "null"], description: base64url X-Wing public key }
+                  keyRegistered: { type: boolean }
+                  envelopeStaged: { type: boolean }
+                  provisioned: { type: boolean }
+            me: { type: [object, "null"], properties: { participantId: { type: string }, partyIndex: { type: integer } } }
+    SharedWallet:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        keyStatus: { type: string, enum: [none, rekey_required, active] }
+        key:
+          type: object
+          properties:
+            status: { type: string, enum: [not_initialized, in_progress, awaiting_provisioning, initialized, failed, rekey_required] }
+            generation: { $ref: "#/components/schemas/KeyGenerationSummary" }
+            keyGenerationId: { type: string, format: uuid }
+            fingerprint: { type: string }
+        policy: { $ref: "#/components/schemas/AuthorizationPolicy" }
+        me: { $ref: "#/components/schemas/SharedParticipant" }
+        participants: { type: array, items: { $ref: "#/components/schemas/SharedParticipant" } }
+        accounts: { type: array, items: { $ref: "#/components/schemas/SharedAccount" } }
+        invitations: { type: array, description: Owner only, items: { type: object } }
+        createdAt: { type: string, format: date-time }
+    Proposal:
+      type: object
+      description: Immutable after creation except status. Snapshot fields are frozen at creation.
+      properties:
+        id: { type: string, format: uuid }
+        walletId: { type: string, format: uuid }
+        accountId: { type: string, format: uuid }
+        derivationIndex: { type: integer }
+        initiatorParticipantId: { type: string, format: uuid }
+        senderAddress: { type: [string, "null"], description: "QdAccount address of the sender account once its key is registered" }
+        chainId: { type: integer }
+        to: { type: string }
+        valueWei: { type: string }
+        data: { type: string }
+        nonce: { type: integer }
+        gasLimit: { type: integer }
+        maxFeePerGas: { type: string }
+        maxPriorityFeePerGas: { type: string }
+        policy: { type: object }
+        membershipVersion: { type: integer }
+        participantCount: { type: integer }
+        requiredApprovals: { type: integer }
+        eligibleParticipantIds: { type: array, items: { type: string, format: uuid } }
+        digest: { type: string, description: SHA-256 hex of the canonical proposal string }
+        status: { type: string, enum: [pending, approved, rejected, expired, superseded] }
+        approvals: { type: integer }
+        rejections: { type: integer }
+        remainingApprovals: { type: integer }
+        votes: { type: array, items: { type: object } }
+        myVote: { type: string, enum: [approve, reject] }
+        lifecycle:
+          type: string
+          enum: [awaiting_approvals, threshold_reached, awaiting_key_generation, awaiting_account_key, awaiting_signers, signing, signing_failed,
+                 signature_verified, checking_relayer, relayer_unavailable, insufficient_account_funds, insufficient_relayer_funds,
+                 setting_up_verifier, preparing_account, waiting_nonce, submitting, submitted, confirmed, execution_failed,
+                 rejected, expired, superseded]
+          description: "Single honest status from approval to chain; confirmed only after a receipt with status 1 and a matching Executed(success = true) event."
+        signing: { type: object, description: "Present once approved: selected signers, their party indexes and the latest signing session summary (status round1|round2|round3|combining|complete|failed, per-round progress)." }
+        execution: { $ref: "#/components/schemas/Execution" }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }

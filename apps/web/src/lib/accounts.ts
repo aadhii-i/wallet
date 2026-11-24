@@ -1,7 +1,7 @@
 'use client';
 import { discoverAccounts } from '@qd/evm';
 import { indexesToVerify, makeAccountMeta, nextAccountIndex, reconcileAccounts, type HDAccountMeta } from '@qd/wallet-core';
-import { getAdapter, registry } from './chains';
+import { getEvmAdapter, registry } from './chains';
 import { useMeta } from './store';
 import { vault } from './vault-client';
 
@@ -51,11 +51,11 @@ const DISCOVERY_TIMEOUT_MS = 15_000;
  */
 export async function discoverRestoredAccounts(): Promise<{ accounts: HDAccountMeta[]; complete: boolean }> {
   const { networkId, customRpc } = useMeta.getState();
-  const ids = [...new Set([networkId, 'sepolia'])].filter((id) => registry.byId(id));
+  const ids = [...new Set([networkId, 'sepolia'])].filter((id) => registry.byId(id)?.family === 'evm');
   const addresses = await vault.call('addresses', { indexes: Array.from({ length: DISCOVERY_SCAN }, (_, i) => i) });
   // discoverAccounts treats RPC errors as "unused", so scan only networks that answer
   // with the right chain id; otherwise report the scan as incomplete.
-  const candidates = ids.map((id) => getAdapter(id, customRpc[id]));
+  const candidates = ids.map((id) => getEvmAdapter(id, customRpc[id]));
   const reachable = await Promise.all(candidates.map((a) => a.getChainStatus().then(() => true, () => false)));
   const adapters = candidates.filter((_, i) => reachable[i]);
   if (adapters.length === 0) return { accounts: [makeAccountMeta(0, addresses[0]!)], complete: false };

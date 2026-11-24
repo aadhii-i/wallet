@@ -200,3 +200,30 @@ export interface ApiHederaBalance {
   tinybars: number;
   hbar: string;
 }
+
+/**
+ * A single activity entry from a Mirror Node CRYPTOTRANSFER transaction,
+ * classified relative to the queried account. Mirrors the Go `HederaActivityItem`;
+ * int64 amounts become JS numbers (tinybars fit losslessly in 2^53).
+ */
+export interface ApiHederaActivityItem {
+  transactionId: string;
+  timestamp: string;
+  type: string;
+  direction: 'in' | 'out' | 'self';
+  from: string;
+  to: string;
+  /** 1 HBAR = 100,000,000 tinybars. */
+  amountTinybars: number;
+  /** Pre-formatted display string (truncated, never rounded), e.g. "1.00000000 HBAR". */
+  hbar: string;
+  feeTinybars: number;
+  status: 'confirmed' | 'failed';
+  networkId: string;
+}
+
+/** One page of Hedera activity; `nextCursor` is passed back as `?cursor=`. */
+export interface ApiHederaHistoryPage {
+  items: ApiHederaActivityItem[];
+  nextCursor?: string;
+}

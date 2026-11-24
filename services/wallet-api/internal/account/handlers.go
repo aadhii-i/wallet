@@ -9,13 +9,14 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/qdwallet/wallet-api/internal/auth"
+	"github.com/qdwallet/wallet-api/internal/blockchain/hedera"
 	"github.com/qdwallet/wallet-api/internal/platform/httpx"
 	"github.com/qdwallet/wallet-api/internal/store"
 )
 
 type Handlers struct {
-	svc           *Service
-	store         store.Store
+	svc            *Service
+	store          store.Store
 	hederaVerifier HederaAccountVerifier
 }
 
@@ -214,8 +215,12 @@ func (h *Handlers) RegisterAddress(w http.ResponseWriter, r *http.Request) {
 			httpx.BadRequest(w, r, "INVALID_BODY", "proof is required for bitcoin registrations")
 			return
 		}
-		if req.Network == "" || req.AddressType == "" {
-			httpx.BadRequest(w, r, "INVALID_BODY", "network and addressType are required for bitcoin registrations")
+		if req.Network == "" {
+			httpx.BadRequest(w, r, "INVALID_BODY", "network is required for bitcoin registrations")
+			return
+		}
+		if req.AddressType == "" {
+			httpx.BadRequest(w, r, "INVALID_BODY", "addressType is required for bitcoin registrations")
 			return
 		}
 		addr, err := h.svc.RegisterBitcoinAddress(r.Context(), p.UserID, accountID, req.Network, req.AddressType, req.Address, req.Proof)
@@ -244,11 +249,21 @@ func (h *Handlers) RegisterAddress(w http.ResponseWriter, r *http.Request) {
 		}
 		addr, err := h.svc.RegisterHederaAddress(r.Context(), p.UserID, accountID, req.Address, req.HexPubKey, h.hederaVerifier)
 		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
+			switch {
+			case errors.Is(err, store.ErrNotFound):
 				httpx.NotFound(w, r, "NOT_FOUND", "")
-				return
+			case errors.Is(err, hedera.ErrAccountNotFound):
+				// A transient Mirror Node 404 (usually indexing lag shortly
+				// after creation) is retryable and is not an ownership verdict.
+				httpx.NotFound(w, r, "HEDERA_ACCOUNT_NOT_FOUND", "hedera account is not visible on the Mirror Node yet; retry registration")
+			case errors.Is(err, hedera.ErrInvalidAccountID):
+				httpx.BadRequest(w, r, "INVALID_BODY", "address must be a Hedera account ID in shard.realm.num format")
+			case errors.Is(err, hedera.ErrKeyTypeMismatch), errors.Is(err, hedera.ErrPublicKeyMismatch):
+				httpx.BadRequest(w, r, "INVALID_OWNERSHIP", err.Error())
+			default:
+				// Transport/upstream failure: never report it as an ownership mismatch.
+				httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "HEDERA_VERIFICATION_FAILED", "Service unavailable", "hedera ownership verification is temporarily unavailable")
 			}
-			httpx.BadRequest(w, r, "INVALID_OWNERSHIP", err.Error())
 			return
 		}
 		httpx.WriteJSON(w, http.StatusOK, addressJSON(addr))

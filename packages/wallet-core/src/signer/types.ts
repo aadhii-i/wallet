@@ -34,6 +34,32 @@ export type SigningPayload =
       addressType: 'p2wpkh' | 'p2tr';
       /** Unsigned PSBT, base64. */
       psbt: string;
+    }
+  | {
+      /** Hedera native HBAR transfer. The KeyWorker signs the serialized bytes. */
+      kind: 'hedera-transfer';
+      /** Hedera Testnet Account ID of the sender, e.g. '0.0.12345'. */
+      fromAccountId: string;
+      /** Hedera Testnet Account ID of the recipient. */
+      toAccountId: string;
+      /** Transfer amount in tinybars as a decimal string (avoids bigint serialisation issues). */
+      amountTinybars: string;
+      /** Serialised TransferTransaction bytes, Uint8Array base64-encoded, for the KeyWorker to sign. */
+      transactionBytes: string;
+    }
+  | {
+      /** Hedera AccountCreateTransaction. The KeyWorker signs the serialised bytes
+       *  with the payer key (required) and optionally with the new account's
+       *  derived wallet key (proof of intent). Neither key is cached or returned. */
+      kind: 'hedera-account-create';
+      /** Serialised AccountCreateTransaction bytes, base64-encoded, for the KeyWorker to sign. */
+      transactionBytes: string;
+      /** Hedera Testnet Account ID of the fee payer, e.g. '0.0.11427910'. */
+      payerAccountId: string;
+      /** Payer's raw private-key hex. Used only inside this signing call, then wiped. */
+      payerPrivateKeyHex: string;
+      /** HD index of the wallet account whose derived key may also sign. */
+      walletHdIndex: number;
     };
 
 export interface AccountRef {
@@ -61,7 +87,9 @@ export interface SigningRequest {
 export type SignatureResult =
   | { kind: 'evm-ecdsa'; signerKind: SignerKind; r: Hex; s: Hex; yParity: 0 | 1 }
   | { kind: 'evm-personal'; signerKind: SignerKind; signature: Hex }
-  | { kind: 'btc-psbt'; signerKind: SignerKind; /** Signed PSBT, base64. */ psbt: string };
+  | { kind: 'btc-psbt'; signerKind: SignerKind; /** Signed PSBT, base64. */ psbt: string }
+  | { kind: 'hedera-transfer'; signerKind: SignerKind; /** Signed transaction bytes, base64. */ signedBytes: string }
+  | { kind: 'hedera-account-create'; signerKind: SignerKind; /** Signed transaction bytes, base64. */ signedBytes: string };
 
 export interface Signer {
   readonly kind: SignerKind;
