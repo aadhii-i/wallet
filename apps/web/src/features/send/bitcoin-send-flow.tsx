@@ -16,7 +16,7 @@ import {
   type FeeQuote,
   type FeeTier,
 } from '@qd/blockchain';
-import type { BitcoinFeeParams, BitcoinUnsignedTx } from '@qd/bitcoin';
+import { checkBitcoinAddress, dustLimit, type BitcoinFeeParams, type BitcoinUnsignedTx } from '@qd/bitcoin';
 import {
   assessFee,
   assessRecipient,
@@ -39,6 +39,7 @@ import { Skeleton } from '@/components/ui/spinner';
 import { NetworkDot } from '@/components/wallet/network-sheet';
 import { stepVariants, t } from '@/components/ui/motion';
 import { ErrorPanel, ReviewRow, RiskList, StatusView, tierLabel } from './send-flow';
+import { BitcoinSavedPayments } from './bitcoin-saved-payments';
 
 type Step = 'recipient' | 'amount' | 'review';
 const ORDER: Step[] = ['recipient', 'amount', 'review'];
@@ -55,6 +56,7 @@ export function BitcoinSendFlow({ network }: { network: BitcoinNetwork }) {
   const router = useRouter();
   const adapter = useBitcoinAdapter();
   const account = useSelectedAccount();
+  const addressType = useMeta(s => s.btcAddressType);
   const from = useAccountAddress();
   const { valued } = useValuedHoldings(from);
 
@@ -91,6 +93,7 @@ export function BitcoinSendFlow({ network }: { network: BitcoinNetwork }) {
 
   return (
     <div className="flex min-h-[calc(100dvh-120px)] flex-col">
+      {!submitting && <BitcoinSavedPayments key={`${network.id}|${from}`} account={account.index} from={from} network={network} addressType={addressType} />}
       {!submitting && (
         <div className="mb-4 flex items-center justify-between">
           <button type="button" onClick={back} aria-label="Back" className="inline-flex h-10 w-10 items-center justify-center rounded-full hover:bg-surface-hover">
@@ -288,6 +291,7 @@ function AmountStep({
     try {
       parsed = parseUnits(value, asset.decimals);
       if (parsed === 0n) error = 'Enter an amount greater than 0';
+      else if (parsed < dustLimit(checkBitcoinAddress(to,network).type ?? 'p2tr')) error = 'The payment is below the minimum amount for this address.';
       else if (balance !== null && parsed > balance) error = `Insufficient ${asset.symbol} balance`;
     } catch (e) {
       error = e instanceof AmountParseError && e.code === 'PRECISION' ? `${asset.symbol} supports up to ${asset.decimals} decimals` : 'Enter a valid amount';
@@ -299,10 +303,9 @@ function AmountStep({
     if (balance === null) return;
     setMaxLoading(true);
     try {
-      const q = await adapter.estimateFee({ from, to, asset, amount: balance });
+      const max = await adapter.maxAmount(from);
       // "Max" must leave room for the fee, otherwise the transaction cannot be
       // built at all.
-      const max = balance - q.options.aggressive.maxFee;
       onChange(max > 0n ? formatUnits(max, asset.decimals) : '0');
       if (max <= 0n) toast.error('Balance too low', 'Not enough to cover the network fee.');
     } catch {
@@ -395,8 +398,11 @@ function ReviewAndSend(props: {
   const [feeSheet, setFeeSheet] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const aborter = useRef<AbortController | null>(null);
+  const preparation = useRef(0);
 
   const prepare = useCallback(async () => {
+    const attempt = ++preparation.current;
+    setPrepared(null);
     dispatch({ type: 'ESTIMATE' });
     try {
       await adapter.getChainStatus();
@@ -405,15 +411,18 @@ function ReviewAndSend(props: {
       const unsigned = await adapter.buildTransaction(intent, quote.options[tier]);
       // The token is bound to exactly these PSBT bytes inside the KeyWorker.
       const token = await vault.call('issueConfirmation', { payload: adapter.signingPayload(unsigned) });
+      if (attempt !== preparation.current) return;
       setPrepared({ unsigned, token, quote });
       dispatch({ type: 'ESTIMATED', at: Date.now() });
     } catch (e) {
+      if (attempt !== preparation.current) return;
       dispatch({ type: 'ERROR', error: mapError(e, 'estimate') });
     }
   }, [adapter, from, to, asset, amount, tier]);
 
   useEffect(() => {
     void prepare();
+    return () => { preparation.current++; };
   }, [prepare]);
 
   // Re-quote while the user sits on the review screen (spec §16.1).
@@ -471,6 +480,7 @@ function ReviewAndSend(props: {
     props.onStatus();
     let signed;
     try {
+      await adapter.revalidate(prepared.unsigned);
       const sig = await vault.call('sign', {
         account: { id: props.accountApiId ?? `hd-${props.accountIndex}`, hdIndex: props.accountIndex },
         payload: adapter.signingPayload(prepared.unsigned),
@@ -483,6 +493,7 @@ function ReviewAndSend(props: {
       return;
     }
     try {
+      await adapter.revalidate(prepared.unsigned);
       const hash = await adapter.broadcastTransaction(signed);
       dispatch({ type: 'BROADCAST_OK', hash });
       const local = {
@@ -572,6 +583,10 @@ function ReviewAndSend(props: {
               </span>
             </ReviewRow>
             <ReviewRow label="Asset">{asset.name}</ReviewRow>
+            {unsigned.change > 0n && <ReviewRow label="Change returned">
+              <span className="text-right"><span className="tabular block">{formatDisplay(unsigned.change,8,8)} BTC</span>
+                <span className="block text-xs text-muted">Fresh address in this wallet</span></span>
+            </ReviewRow>}
             <ReviewRow label="Network">
               <span className="inline-flex items-center gap-1.5">
                 <NetworkDot network={network} size={16} /> {network.name}

@@ -1,10 +1,22 @@
 import type { ConfirmationToken, SignatureResult, SigningPayload, SigningRequest } from '@qd/wallet-core';
 import type { BitcoinAddressType } from '@qd/blockchain';
+import type { BitcoinSharedContext } from '@qd/wallet-core';
+import type { BitcoinEnrollment, BitcoinSharedPolicy, SharedBitcoinProposal, BitcoinApproval, BitcoinRound } from '@qd/bitcoin';
 
 export type BitcoinNetworkName = 'mainnet' | 'testnet4';
 
 /** Typed message protocol between the UI thread and the KeyWorker. */
 export interface VaultOps {
+  btcSharedEnroll: {
+    req: { context: BitcoinSharedContext; participantId: string; derivationIndex: number };
+    res: BitcoinEnrollment;
+  };
+  btcSharedPin: { req: { policy: BitcoinSharedPolicy; confirmation: ConfirmationToken }; res: { policyId: string } };
+  btcSharedPlan: { req: { policy: BitcoinSharedPolicy; highestUsed?: number }; res: { next: number; unavailable: string[] } };
+  btcSharedApprove: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; confirmation: ConfirmationToken }; res: { message: string } };
+  btcSharedRound: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; round: 1|2|3; inputs: BitcoinRound[] }; res: BitcoinRound };
+  btcSharedNativeSign: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; approval: BitcoinApproval }; res: { partial: string; from: number } };
+  btcSharedFinalize: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; approval: BitcoinApproval; partials: string[] }; res: { txid: string; raw: string; vsize: number } };
   status: { req: void; res: VaultStatus };
   create: { req: { password: string; words: 12 | 24 }; res: { address: string } };
   import: { req: { mnemonic: string; password: string }; res: { address: string } };
@@ -20,6 +32,18 @@ export interface VaultOps {
   btcDescriptor: {
     req: { network: BitcoinNetworkName; addressType: BitcoinAddressType };
     res: { descriptor: string; xpub: string; fingerprint: string };
+  };
+  btcChangeAddresses: {
+    req: { account: number; start: number; count: number; network: BitcoinNetworkName; addressType: BitcoinAddressType };
+    res: { address: string; changeIndex: number }[];
+  };
+  btcChangeDescriptor: {
+    req: { account: number; network: BitcoinNetworkName; addressType: BitcoinAddressType };
+    res: { descriptor: string; xpub: string; fingerprint: string };
+  };
+  btcChangePlan: {
+    req: { account: number; network: BitcoinNetworkName; addressType: BitcoinAddressType; highestUsed?: number };
+    res: { address: string; index: number; unavailable: string[]; pending: { txid: string; raw: string; createdAt: number }[] };
   };
   getBackupPhrase: { req: void; res: string };
   markBackedUp: { req: void; res: void };

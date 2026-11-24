@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { TEST_NETWORK, Transaction } from '@scure/btc-signer';
-import { HDKeyring, fromHex, type SigningPayload } from '@qd/wallet-core';
+import { HDKeyring, fromHex, bytesToHex, type SigningPayload } from '@qd/wallet-core';
 import { BITCOIN_NETWORKS, type BitcoinNetwork } from '@qd/blockchain';
 import {
   BitcoinAdapter,
@@ -26,7 +26,12 @@ function network(id: string): BitcoinNetwork {
 }
 
 function utxo(address: string, value: bigint, vout = 0, txid = '11'.repeat(32)): BtcUtxo {
-  return { txid, vout, value, scriptPubKey: scriptPubKeyHex(address), confirmations: 6 };
+  const previous = new Transaction({ allowUnknownInputs: true, allowUnknownOutputs: true });
+  previous.addInput({ txid, index: 0 });
+  for (let i = 0; i <= vout; i++) previous.addOutput({ amount: value, script: fromHex(scriptPubKeyHex(address)) });
+  previous.updateInput(0, { finalScriptSig: new Uint8Array([0]) });
+  const raw = bytesToHex(previous.toBytes(true, false));
+  return { txid: previous.id, vout, value, scriptPubKey: scriptPubKeyHex(address), confirmations: 6, previousTx: raw };
 }
 
 describe('coin selection', () => {
@@ -54,10 +59,10 @@ describe('coin selection', () => {
     expect(() => selectCoins([utxo(address, 1_000n)], 50_000n, 2, 'p2wpkh')).toThrow();
   });
 
-  it('ignores dust outputs', () => {
+  it('does not select uneconomic inputs unnecessarily', () => {
     const utxos = [utxo(address, DUST_LIMIT_SATS - 1n), utxo(address, 50_000n)];
     expect(selectCoins(utxos, 40_000n, 1, 'p2wpkh').inputs).toHaveLength(1);
-    expect(totalSats(utxos)).toBe(50_545n);
+    expect(totalSats(utxos)).toBe(50_000n + DUST_LIMIT_SATS - 1n);
   });
 });
 
@@ -71,8 +76,8 @@ describe('fee estimation', () => {
     expect(Number.isInteger(one)).toBe(true);
   });
 
-  it('charges 68 vB per P2WPKH input and 58 vB per P2TR input', () => {
-    expect(estimateVsize(2, 'p2wpkh', 1) - estimateVsize(1, 'p2wpkh', 1)).toBe(68);
+  it('reserves 69 vB per P2WPKH input and 58 vB per P2TR input', () => {
+    expect(estimateVsize(2, 'p2wpkh', 1) - estimateVsize(1, 'p2wpkh', 1)).toBe(69);
     expect(estimateVsize(2, 'p2tr', 1) - estimateVsize(1, 'p2tr', 1)).toBe(58);
   });
 });
@@ -102,7 +107,8 @@ describe('PSBT sign and extract', () => {
       addressType: 'p2wpkh',
       from,
       to,
-      changeAddress: from,
+      changeAddress: keyring.btcChangeAddress(0, 0, 'p2wpkh', 'testnet4'),
+      changeIndex: 0,
       amount: 50_000n,
       selection,
     });
@@ -116,6 +122,7 @@ describe('PSBT sign and extract', () => {
       from,
       addressType: 'p2wpkh',
       psbt: unsigned.psbt,
+      review: unsigned.review,
     };
     const result = signer.sign({
       account: { id: 'a', hdIndex: 0 },
@@ -144,7 +151,8 @@ describe('PSBT sign and extract', () => {
       addressType: 'p2tr',
       from,
       to,
-      changeAddress: from,
+      changeAddress: keyring.btcChangeAddress(0, 0, 'p2tr', 'testnet4'),
+      changeIndex: 0,
       amount: 75_000n,
       selection,
     });
@@ -155,6 +163,7 @@ describe('PSBT sign and extract', () => {
       from,
       addressType: 'p2tr',
       psbt: unsigned.psbt,
+      review: unsigned.review,
     };
     const result = signer.sign({
       account: { id: 'a', hdIndex: 0 },
@@ -189,6 +198,7 @@ describe('PSBT sign and extract', () => {
       from,
       addressType: 'p2wpkh',
       psbt: unsigned.psbt,
+      review: unsigned.review,
     };
     expect(() =>
       signer.sign({
@@ -245,7 +255,7 @@ describe('PSBT sign and extract', () => {
       confirmations: 6,
     };
 
-    const selection = selectCoins([badUtxo], 50_000n, 2, 'p2wpkh');
+    const selection = { ...selectCoins([utxo(from, 100_000n)], 50_000n, 2, 'p2wpkh'), inputs: [badUtxo] };
 
     expect(() =>
       buildPsbt({
@@ -257,7 +267,7 @@ describe('PSBT sign and extract', () => {
         amount: 50_000n,
         selection,
       }),
-    ).toThrow('A selected UTXO does not pay the sending address');
+    ).toThrow('Invalid Bitcoin UTXO');
   });
 
   it('accepts a P2TR UTXO with correct scriptPubKey', async () => {
@@ -300,6 +310,7 @@ describe('BitcoinAdapter', () => {
       chain: 'testnet4',
       getTipHeight: async () => 100n,
       getUtxos: async () => [utxo(address, 100_000n)],
+      getRawTransaction: async () => utxo(address, 100_000n).previousTx!,
       getFees: async () => ({ low: 1, market: 2, aggressive: 5, tipHeight: 100, quotedAt: Date.now() }),
       getTransaction: async () => null,
       getHistory: async () => ({ items: [] }),
@@ -315,6 +326,11 @@ describe('BitcoinAdapter', () => {
     const adapter = new BitcoinAdapter({
       network: net,
       dataSource: dataSource(from, overrides),
+      wallet: {
+        discover: async () => ({ addresses: [{ address: from }], highestUsed: -1 }),
+        change: async () => ({ address: keyring.btcChangeAddress(0, 0, 'p2wpkh', 'testnet4'), index: 0 }),
+        unavailable: async () => new Set(),
+      },
       now: () => 1,
     });
     return { adapter, from, to };

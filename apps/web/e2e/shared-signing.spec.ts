@@ -1,4 +1,7 @@
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
+import { HDKeyring, bytesToHex, fromHex } from '@qd/wallet-core';
+import { BITCOIN_TESTNET4_GENESIS, scriptPubKeyHex } from '@qd/bitcoin';
+import { Transaction, TEST_NETWORK } from '../../../packages/bitcoin/test/fixtures';
 
 /**
  * ACCEPTANCE: three independent browsers, a 2-of-3 shared wallet, real
@@ -62,7 +65,7 @@ async function newParticipant(browser: Browser): Promise<Page> {
 const keyCard = (page: Page): Locator => page.getByRole('region', { name: 'Threshold key' });
 const card = (page: Page): Locator => page.getByRole('article', { name: new RegExp(`^Proposal: 0\\.02 ETH to ${RECIPIENT}$`, 'i') });
 
-test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon key; executed and confirmed on Anvil', async ({ browser }) => {
+test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign shared Bitcoin with Threshold Raccoon approval and a native quorum':'acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon key; executed and confirmed on Anvil', async ({ browser }) => {
   // --- wallet with three independent participants ---
   const adhil = await newParticipant(browser);
   const create = adhil.getByRole('form', { name: 'Create shared wallet' });
@@ -125,6 +128,9 @@ test('acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon k
   // Every participant reads the same balance from the chain (independent profiles, own caches).
   for (const page of all) await expect(page.getByLabel('Account balance')).toHaveText('1 ETH', { timeout: 30_000 });
   const recipientBefore = await balance(RECIPIENT);
+
+  await verifySharedBitcoin(all);
+  if(process.env.QD_BITCOIN_SHARED_ONLY==='1'){expect(pageErrors,pageErrors.join('\n')).toEqual([]);return;}
 
   // --- ADHIL proposes 0.02 ETH ---
   const form = adhil.getByRole('form', { name: 'New proposal' });
@@ -290,4 +296,68 @@ function formatEth(wei: bigint): string {
   const whole = wei / 10n ** 18n;
   const frac = (wei % 10n ** 18n).toString().padStart(18, '0').replace(/0+$/, '');
   return frac ? `${whole}.${frac}` : `${whole}`;
+}
+
+/** Public Bitcoin data are simulated; device authentication, encrypted shares,
+ * workers, all Raccoon rounds and independent native signatures are real. */
+async function verifySharedBitcoin(pages:Page[]) {
+  const panels=pages.map(page=>page.getByRole('region',{name:'Shared Bitcoin',exact:true}));
+  for(const panel of panels)await panel.getByRole('button',{name:'Register my Bitcoin key'}).click();
+  for(const panel of panels) {
+    await expect(panel.getByText('Native keys registered: 3 / 3')).toBeVisible();
+    await panel.getByRole('checkbox').check();
+    await panel.getByRole('button',{name:'Confirm Bitcoin policy'}).click();
+  }
+  const address=(await panels[0]!.getByLabel('Shared Bitcoin receive address',{exact:true}).textContent())!.trim();
+  for(const panel of panels)await expect(panel.getByLabel('Shared Bitcoin receive address',{exact:true})).toHaveText(address);
+  const funding=new Transaction({allowUnknownInputs:true});funding.addInput({txid:'11'.repeat(32),index:0});
+  funding.addOutputAddress(address,100_000n,TEST_NETWORK);funding.updateInput(0,{finalScriptSig:new Uint8Array([0])});
+  const raw=bytesToHex(funding.toBytes(true,false));let submitted:Transaction|undefined;
+  for(const page of pages)await page.route('**/v1/btc/**',async route=>{
+    const path=new URL(route.request().url()).pathname;
+    const answer=(data:unknown,status=200)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(data)});
+    if(path.endsWith('/identity'))return answer({genesis:BITCOIN_TESTNET4_GENESIS});
+    if(path.endsWith('/fees'))return answer({fees:{low:1,market:2,aggressive:3,tipHeight:500,quotedAt:new Date().toISOString()}});
+    const a=/\/address\/([^/]+)\/(used|utxos|history)$/.exec(path);
+    if(a){const own=decodeURIComponent(a[1]!)===address;
+      if(a[2]==='used')return answer({used:own});
+      if(a[2]==='utxos')return answer({utxos:own&&!submitted?[{txid:funding.id,vout:0,value:'100000',confirmations:6}]:[]});
+      return answer({items:[]});
+    }
+    if(path.endsWith(`/tx/${funding.id}/raw`))return answer({raw});
+    if(path.endsWith('/broadcast')) {
+      const tx=Transaction.fromRaw(fromHex(route.request().postDataJSON().raw));
+      expect(tx.getInput(0).finalScriptWitness!.length).toBe(4);
+      expect(tx.outputsLength).toBe(2);expect(tx.getOutputAddress(1,TEST_NETWORK)).not.toBe(address);
+      submitted=tx;return answer({txid:tx.id});
+    }
+    return answer({status:404,code:'NOT_FOUND'},404);
+  });
+  const key=await HDKeyring.fromMnemonic('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
+  const recipient=key.btcAddress(8,'p2wpkh','testnet4');key.lock();
+  let success=false;
+  for(let attempt=0;attempt<12&&!success;attempt++) {
+    const prepare=panels[0]!;
+    await prepare.getByLabel('Bitcoin recipient',{exact:true}).fill(recipient);
+    await prepare.getByLabel('Amount in BTC',{exact:true}).fill('0.0004');
+    await prepare.getByRole('button',{name:'Prepare Bitcoin proposal'}).click();
+    await expect(prepare.getByRole('combobox',{name:'Bitcoin proposal',exact:true})).not.toHaveValue('');
+    const session=await prepare.getByRole('combobox',{name:'Bitcoin proposal',exact:true}).inputValue();
+    for(const panel of panels.slice(1)) {
+      const select=panel.getByRole('combobox',{name:'Bitcoin proposal',exact:true});
+      await expect(select.locator(`option[value="${session}"]`)).toHaveCount(1);await select.selectOption(session);
+    }
+    for(const panel of panels)await panel.getByRole('button',{name:'Approve and participate in signing'}).click();
+    const outcome=await Promise.race([
+      prepare.getByRole('button',{name:'Finalize and submit Bitcoin payment'}).waitFor({state:'visible'}).then(async()=>{
+        await expect(prepare.getByRole('button',{name:'Finalize and submit Bitcoin payment'})).toBeEnabled({timeout:45000});return 'ready';
+      }),
+      Promise.any(panels.map(panel=>panel.getByRole('alert').waitFor({state:'visible',timeout:50000}))).then(()=>'aborted'),
+    ]);
+    if(outcome==='aborted')continue;
+    await prepare.getByRole('button',{name:'Finalize and submit Bitcoin payment'}).click();
+    await expect(prepare.getByRole('status')).toContainText('Bitcoin payment submitted:');success=true;
+  }
+  expect(success).toBe(true);expect(submitted).toBeDefined();
+  expect(submitted!.getOutputAddress(0,TEST_NETWORK)).toBe(recipient);
 }

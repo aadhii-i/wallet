@@ -27,6 +27,7 @@ import { CopyButton, shortAddress } from '@/components/ui/identity';
 import { Skeleton } from '@/components/ui/spinner';
 import { WalletHistory } from './wallet-history';
 import { AccountOnChain, LIFECYCLE_LABEL, LIFECYCLE_TONE, SigningPanel, useAccountChainState } from './shared-signing';
+import { BitcoinShared } from './bitcoin-shared';
 
 // ---------- shared helpers ----------
 
@@ -511,6 +512,7 @@ function Dashboard({ walletId, onBack }: { walletId: string; onBack: () => void 
       <Participants wallet={w} onLeft={onBack} />
       {w.me.role === 'owner' && <Invitations wallet={w} />}
       <Accounts wallet={w} />
+      <BitcoinShared key={`${w.id}|${w.policy.membershipVersion}|${w.key.keyGenerationId}`} wallet={w} />
       {w.me.status === 'active' && <NewProposal wallet={w} />}
       <Proposals wallet={w} />
       <Card title="Wallet History" anchor="sw-wallet-history" className="border-primary/30">

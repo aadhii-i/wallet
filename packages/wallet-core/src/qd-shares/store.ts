@@ -189,6 +189,20 @@ export class QdShareStore {
     });
   }
 
+  /** Retain this device's own Bitcoin policy share across later EVM rekeying. */
+  async archiveBitcoinShare(policyId: string, walletId: string): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(policyId)) throw new ShareProvisioningError('BAD_CONTEXT','Invalid Bitcoin policy');
+    await this.mutate((v,key) => {
+      const id=`bitcoin:${policyId}`;
+      if (v.shares[id]) return;
+      const source=v.shares[walletId];
+      if (!source) throw new ShareProvisioningError('NOT_FOUND','No local key share');
+      const bytes=open(key,source.sealed,aad('share',walletId,source.info));
+      try {v.shares[id]={info:source.info,sealed:seal(key,bytes,aad('share',id,source.info))};}
+      finally {wipe(bytes);}
+    });
+  }
+
   async shareInfo(walletId: string): Promise<ShareInfo | undefined> {
     return (await this.load())?.shares[walletId]?.info;
   }

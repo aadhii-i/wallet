@@ -2,11 +2,22 @@ export type ChainFamily = 'evm' | 'bitcoin' | 'monero' | 'hedera';
 export type SignerKind = 'hd' | 'mpc' | 'qd';
 export type Hex = `0x${string}`;
 
+/** Approved Bitcoin outputs and bounded internal derivation hints; no arbitrary paths. */
+export interface BitcoinReview {
+  recipient: string;
+  amount: string;
+  maxFee: string;
+  changeAddress: string;
+  changeIndex?: number;
+  inputChanges: (number | null)[];
+}
+
 /**
  * What a signer is asked to sign. Adapters produce these; signers never build them.
  * Keeping payloads byte-level keeps wallet-core free of chain libraries (spec §10.4).
  */
 export type SigningPayload =
+  | { kind: 'bitcoin-shared'; policyId: string; message: string }
   | {
       kind: 'evm-transaction';
       chainId: number;
@@ -34,6 +45,7 @@ export type SigningPayload =
       addressType: 'p2wpkh' | 'p2tr';
       /** Unsigned PSBT, base64. */
       psbt: string;
+      review?: BitcoinReview;
     }
   | {
       /** Hedera native HBAR transfer. The KeyWorker signs the serialized bytes. */

@@ -3,7 +3,13 @@ import { mnemonicToSeedBytes, validateMnemonic } from '../mnemonic';
 import {
   bitcoinAddressFromNode,
   btcAccountDescriptor,
+  btcInternalDescriptor,
+  btcSharedRootPath,
+  encodeExtendedPublicKey,
+  assertIndex,
+  type BitcoinSharedContext,
   deriveBtcNode,
+  deriveBtcChangeNode,
   deriveEvmNode,
   deriveHederaNode,
   hederaPublicKeyFromNode,
@@ -88,6 +94,61 @@ export class HDKeyring {
     network: BitcoinNetworkName = 'mainnet',
   ): BitcoinDescriptor {
     return btcAccountDescriptor(this.requireMaster(), addressType, network);
+  }
+
+  btcChangeAddress(
+    account: number,
+    index: number,
+    addressType: BitcoinAddressType,
+    network: BitcoinNetworkName,
+  ): string {
+    const node = deriveBtcChangeNode(this.requireMaster(), account, index, addressType, network);
+    try {
+      return bitcoinAddressFromNode(node, addressType, network);
+    } finally {
+      node.wipePrivateData();
+    }
+  }
+
+  btcChangeDescriptor(
+    account: number,
+    addressType: BitcoinAddressType,
+    network: BitcoinNetworkName,
+  ): BitcoinDescriptor {
+    return btcInternalDescriptor(this.requireMaster(), account, addressType, network);
+  }
+
+  withBtcChangePrivateKey<T>(
+    account: number,
+    index: number,
+    addressType: BitcoinAddressType,
+    network: BitcoinNetworkName,
+    fn: (privateKey: Uint8Array) => T,
+  ): T {
+    const node = deriveBtcChangeNode(this.requireMaster(), account, index, addressType, network);
+    try {
+      if (!node.privateKey) throw new SignerError('LOCKED', 'Private key unavailable');
+      return fn(node.privateKey);
+    } finally {
+      node.wipePrivateData();
+    }
+  }
+
+  btcSharedRoot(context: BitcoinSharedContext): string {
+    const root = this.requireMaster().derive(btcSharedRootPath(context));
+    try { return encodeExtendedPublicKey(root, context.network); }
+    finally { root.wipePrivateData(); }
+  }
+
+  withBtcSharedPrivateKey<T>(context: BitcoinSharedContext, branch: 0 | 1, index: number, fn: (key: Uint8Array) => T): T {
+    if (branch !== 0 && branch !== 1) throw new Error('Invalid shared Bitcoin branch');
+    assertIndex(index);
+    if (index >= 10000) throw new Error('Shared Bitcoin derivation limit reached');
+    const node = this.requireMaster().derive(`${btcSharedRootPath(context)}/${branch}/${index}`);
+    try {
+      if (!node.privateKey) throw new SignerError('LOCKED', 'Private key unavailable');
+      return fn(node.privateKey);
+    } finally { node.wipePrivateData(); }
   }
 
   /**

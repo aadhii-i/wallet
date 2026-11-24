@@ -1,0 +1,550 @@
+import { HDKey } from '@scure/bip32';
+import { base64 } from '@scure/base';
+import { Transaction, p2ms, p2wsh, TEST_NETWORK } from '@scure/btc-signer';
+import { secp256k1 } from '@noble/curves/secp256k1.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, fromHex, type BitcoinSharedContext } from '@qd/wallet-core';
+import {
+  decodePublicKey,
+  decodeSignature,
+  encodeSignature,
+  verify,
+  combine,
+  decodeRound1,
+  decodeRound2,
+  decodeRound3,
+} from '@qd/qd-crypto';
+import { scriptPubKeyHex } from './address';
+import { MAX_BITCOIN_SATS, validateUtxos, verifyPreviousOutput, outpoint } from './validation';
+import type { BtcUtxo } from './types';
+
+export const BITCOIN_TESTNET4_GENESIS = '00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043';
+export interface BitcoinEnrollment extends BitcoinSharedContext {
+  participantId: string;
+  partyIndex: number;
+  derivationIndex: number;
+  threshold: number;
+  parties: number;
+  xpub: string;
+  raccoonPublicKey: string; // base64
+  proof: string; // compact ECDSA proof under this participant's branch 0/index 0 key
+}
+export interface BitcoinSharedPolicy {
+  version: 1;
+  context: BitcoinSharedContext;
+  derivationIndex: number;
+  raccoonPublicKey: string;
+  raccoonThreshold: number;
+  nativeThreshold: number;
+  members: BitcoinEnrollment[];
+}
+export interface SharedBitcoinCoin extends BtcUtxo {
+  branch: 0 | 1;
+  addressIndex: number;
+}
+export interface SharedBitcoinProposal {
+  version: 1;
+  id: string;
+  policyId: string;
+  genesis: string;
+  sid: string;
+  active: number[];
+  expiresAt: number;
+  psbt: string;
+  recipient: string;
+  amount: string;
+  maxFee: string;
+  changeIndex: number | null;
+  inputPaths: { branch: 0 | 1; index: number }[];
+}
+export interface BitcoinRound {
+  from: number;
+  payload: string;
+}
+export interface BitcoinApproval {
+  policyId: string;
+  message: string;
+  signature: string;
+}
+export const bitcoinWireText = (bytes: Uint8Array): string => base64.encode(bytes);
+export const bitcoinWireBytes = (text: string): Uint8Array => base64.decode(text);
+
+const jsonHash = (value: unknown): Uint8Array => sha256(new TextEncoder().encode(JSON.stringify(value)));
+const hexHash = (value: unknown): string => bytesToHex(jsonHash(value));
+const boundedIndex = (n: number) => {
+  if (!Number.isSafeInteger(n) || n < 0 || n >= 10000) throw new Error('Invalid Bitcoin address index');
+};
+
+export function enrollmentMessage(e: Omit<BitcoinEnrollment, 'proof'> | BitcoinEnrollment): Uint8Array {
+  return jsonHash([
+    'QDWallet-BitcoinEnrollment/v1',
+    e.walletId,
+    e.accountId,
+    e.keygenId,
+    e.membershipVersion,
+    e.network,
+    e.participantId,
+    e.partyIndex,
+    e.derivationIndex,
+    e.threshold,
+    e.parties,
+    e.xpub,
+    e.raccoonPublicKey,
+  ]);
+}
+
+export function signBitcoinEnrollment(
+  entry: Omit<BitcoinEnrollment, 'proof'>,
+  privateKey: Uint8Array,
+): BitcoinEnrollment {
+  return { ...entry, proof: bytesToHex(secp256k1.sign(enrollmentMessage(entry), privateKey, { prehash: false })) };
+}
+
+export function nativePublicKey(e: BitcoinEnrollment, branch: 0 | 1, index: number): Uint8Array {
+  boundedIndex(index);
+  if (branch !== 0 && branch !== 1) throw new Error('Invalid Bitcoin branch');
+  const root = HDKey.fromExtendedKey(e.xpub, { public: 0x043587cf, private: 0x04358394 });
+  if (root.privateKey || root.depth !== 12 || !e.xpub.startsWith('tpub'))
+    throw new Error('Expected a public shared-account root');
+  return root.deriveChild(branch).deriveChild(index).publicKey!;
+}
+
+export function createBitcoinPolicy(enrollments: BitcoinEnrollment[]): BitcoinSharedPolicy {
+  if (enrollments.length < 2 || enrollments.length > 5)
+    throw new Error('Shared Bitcoin currently supports 2–5 participants');
+  const members = [...enrollments].sort((a, b) => a.partyIndex - b.partyIndex),
+    first = members[0]!;
+  if (first.network !== 'testnet4') throw new Error('Shared Bitcoin is Testnet4 research preview only');
+  const expected = [
+    first.walletId,
+    first.accountId,
+    first.keygenId,
+    first.membershipVersion,
+    first.network,
+    first.derivationIndex,
+    first.threshold,
+    first.parties,
+    first.raccoonPublicKey,
+  ];
+  const identities = new Set<string>(),
+    keys = new Set<string>();
+  if (
+    enrollments[0]!.network !== 'testnet4' ||
+    enrollments[0]!.parties !== enrollments.length ||
+    !Number.isInteger(enrollments[0]!.threshold) ||
+    enrollments[0]!.threshold < 1 ||
+    enrollments[0]!.threshold > enrollments.length
+  )
+    throw new Error('Invalid Bitcoin threshold context');
+  boundedIndex(enrollments[0]!.derivationIndex);
+  for (let i = 0; i < members.length; i++) {
+    const member = members[i]!;
+    const identity = [
+      member.walletId,
+      member.accountId,
+      member.keygenId,
+      member.membershipVersion,
+      member.network,
+      member.derivationIndex,
+      member.threshold,
+      member.parties,
+      member.raccoonPublicKey,
+    ];
+    if (
+      JSON.stringify(expected) !== JSON.stringify(identity) ||
+      member.partyIndex !== i + 1 ||
+      identities.has(member.participantId)
+    )
+      throw new Error('Enrollment context or participant mismatch');
+    const pub = nativePublicKey(member, 0, 0),
+      key = bytesToHex(pub);
+    if (
+      keys.has(key) ||
+      !secp256k1.verify(fromHex(member.proof), enrollmentMessage(member), pub, { prehash: false, lowS: true })
+    )
+      throw new Error('Invalid or duplicate native key enrollment');
+    identities.add(member.participantId);
+    keys.add(key);
+  }
+  if (first.parties !== members.length || first.threshold < 2 || first.threshold > members.length)
+    throw new Error('Invalid Raccoon threshold');
+  decodePublicKey(base64.decode(first.raccoonPublicKey));
+  return {
+    version: 1,
+    context: {
+      walletId: first.walletId,
+      accountId: first.accountId,
+      keygenId: first.keygenId,
+      membershipVersion: first.membershipVersion,
+      network: 'testnet4',
+    },
+    derivationIndex: first.derivationIndex,
+    raccoonPublicKey: first.raccoonPublicKey,
+    raccoonThreshold: first.threshold,
+    nativeThreshold: Math.floor(members.length / 2) + 1,
+    members,
+  };
+}
+
+export function bitcoinPolicyId(policy: BitcoinSharedPolicy): string {
+  const expected = createBitcoinPolicy(policy.members);
+  const fields = (p: BitcoinSharedPolicy) => [
+    p.version,
+    p.context.walletId,
+    p.context.accountId,
+    p.context.keygenId,
+    p.context.membershipVersion,
+    p.context.network,
+    p.derivationIndex,
+    p.raccoonPublicKey,
+    p.raccoonThreshold,
+    p.nativeThreshold,
+  ];
+  if (JSON.stringify(fields(policy)) !== JSON.stringify(fields(expected)))
+    throw new Error('Policy fields differ from authenticated enrollment');
+  return hexHash([
+    'QDWallet-BitcoinPolicy/v1',
+    fields(expected),
+    expected.members.map((m) => [m.participantId, m.partyIndex, m.xpub, m.proof, bytesToHex(enrollmentMessage(m))]),
+  ]);
+}
+
+export function sharedBitcoinOutput(policy: BitcoinSharedPolicy, branch: 0 | 1, index: number) {
+  const pubs = policy.members
+    .map((m) => nativePublicKey(m, branch, index))
+    // Binary lexical order is deterministic across participants' locales.
+    .sort((a, b) => {
+      const left = bytesToHex(a),
+        right = bytesToHex(b);
+      return left < right ? -1 : left > right ? 1 : 0;
+    });
+  if (new Set(pubs.map(bytesToHex)).size !== pubs.length) throw new Error('Duplicate native signing keys');
+  return p2wsh(p2ms(policy.nativeThreshold, pubs), TEST_NETWORK);
+}
+
+/** Conservative bound: maximum DER signatures and the complete witness script. */
+export function sharedBitcoinVsize(policy: BitcoinSharedPolicy, inputs: number, outputs = 2): number {
+  if (!Number.isInteger(inputs) || inputs < 1 || inputs > 100)
+    throw new Error('Shared Bitcoin supports at most 100 inputs');
+  const script = sharedBitcoinOutput(policy, 0, 0).witnessScript.length;
+  return (
+    11 +
+    inputs * (41 + Math.ceil((3 + 74 * policy.nativeThreshold + (script < 253 ? 1 : 3) + script) / 4)) +
+    outputs * 43
+  );
+}
+
+export function makeSharedBitcoinProposal(
+  policy: BitcoinSharedPolicy,
+  coins: SharedBitcoinCoin[],
+  recipient: string,
+  amount: bigint,
+  feeRate: number,
+  changeIndex: number,
+  active: number[],
+  now = Date.now(),
+): SharedBitcoinProposal {
+  const policyId = bitcoinPolicyId(policy);
+  boundedIndex(changeIndex);
+  if (!Number.isFinite(feeRate) || feeRate < 1 || feeRate > 5000 || amount < 330n || amount > MAX_BITCOIN_SATS)
+    throw new Error('Invalid amount or fee rate');
+  const selected: SharedBitcoinCoin[] = [];
+  let total = 0n;
+  validateUtxos(coins);
+  for (const coin of [...coins].sort((a, b) => (a.value > b.value ? -1 : a.value < b.value ? 1 : 0))) {
+    if (coin.confirmations < 1) continue;
+    verifyPreviousOutput(coin);
+    if (coin.scriptPubKey !== bytesToHex(sharedBitcoinOutput(policy, coin.branch, coin.addressIndex).script))
+      throw new Error('Foreign shared Bitcoin input');
+    selected.push(coin);
+    total += coin.value;
+    if (total >= amount + BigInt(Math.ceil(sharedBitcoinVsize(policy, selected.length) * feeRate))) break;
+  }
+  if (!selected.length) throw new Error('No confirmed shared Bitcoin coins');
+  let fee = BigInt(Math.ceil(sharedBitcoinVsize(policy, selected.length) * feeRate));
+  let change = total - amount - fee;
+  if (change < 0n) throw new Error('Not enough shared Bitcoin funds');
+  if (change < 330n) {
+    change = 0n;
+    fee = total - amount;
+  }
+  const tx = new Transaction({ version: 2 });
+  for (const coin of selected) {
+    const output = sharedBitcoinOutput(policy, coin.branch, coin.addressIndex);
+    tx.addInput({
+      txid: coin.txid,
+      index: coin.vout,
+      sequence: 0xffffffff,
+      sighashType: 1,
+      witnessUtxo: { amount: coin.value, script: output.script },
+      nonWitnessUtxo: fromHex(coin.previousTx!),
+      witnessScript: output.witnessScript,
+    });
+  }
+  tx.addOutputAddress(recipient, amount, TEST_NETWORK);
+  if (change) tx.addOutputAddress(sharedBitcoinOutput(policy, 1, changeIndex).address, change, TEST_NETWORK);
+  const proposal: SharedBitcoinProposal = {
+    version: 1,
+    id: crypto.randomUUID(),
+    policyId,
+    genesis: BITCOIN_TESTNET4_GENESIS,
+    sid: bytesToHex(crypto.getRandomValues(new Uint8Array(32))),
+    active: [...active],
+    expiresAt: now + 30 * 60_000,
+    psbt: base64.encode(tx.toPSBT()),
+    recipient,
+    amount: amount.toString(),
+    maxFee: fee.toString(),
+    changeIndex: change ? changeIndex : null,
+    inputPaths: selected.map((c) => ({ branch: c.branch, index: c.addressIndex })),
+  };
+  validateSharedBitcoinProposal(policy, proposal, now);
+  return proposal;
+}
+
+export function validateSharedBitcoinProposal(
+  policy: BitcoinSharedPolicy,
+  p: SharedBitcoinProposal,
+  now = Date.now(),
+): Transaction {
+  if (
+    p.version !== 1 ||
+    p.policyId !== bitcoinPolicyId(policy) ||
+    p.genesis !== BITCOIN_TESTNET4_GENESIS ||
+    !/^[0-9a-f]{64}$/.test(p.sid) ||
+    !/^[0-9a-f-]{36}$/.test(p.id) ||
+    !Number.isSafeInteger(p.expiresAt) ||
+    p.expiresAt <= now ||
+    p.expiresAt > now + 24 * 60 * 60_000 ||
+    p.psbt.length > 12_000_000
+  )
+    throw new Error('Stale or invalid Bitcoin proposal');
+  if (
+    p.active.length !== policy.raccoonThreshold ||
+    new Set(p.active).size !== p.active.length ||
+    p.active.some(
+      (v, i) => !Number.isInteger(v) || v < 1 || v > policy.members.length || (i > 0 && v <= p.active[i - 1]!),
+    )
+  )
+    throw new Error('Invalid Raccoon signer set');
+  if (!/^[1-9][0-9]*$/.test(p.amount) || !/^(0|[1-9][0-9]*)$/.test(p.maxFee)) throw new Error('Invalid review amounts');
+  const tx = Transaction.fromPSBT(base64.decode(p.psbt));
+  if (
+    tx.version !== 2 ||
+    tx.lockTime !== 0 ||
+    tx.inputsLength < 1 ||
+    tx.inputsLength > 100 ||
+    p.inputPaths.length !== tx.inputsLength ||
+    tx.outputsLength < 1 ||
+    tx.outputsLength > 2
+  )
+    throw new Error('Unsupported shared Bitcoin structure');
+  const seen = new Set<string>();
+  let total = 0n;
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const input = tx.getInput(i),
+      path = p.inputPaths[i]!;
+    const output = sharedBitcoinOutput(policy, path.branch, path.index);
+    if (
+      !input.txid ||
+      input.index === undefined ||
+      !input.witnessUtxo ||
+      !input.nonWitnessUtxo ||
+      !input.witnessScript ||
+      input.sighashType !== 1 ||
+      input.sequence !== 0xffffffff ||
+      input.partialSig?.length ||
+      input.finalScriptWitness?.length ||
+      input.finalScriptSig?.length ||
+      input.redeemScript ||
+      input.tapKeySig
+    )
+      throw new Error('Unsupported or unverified shared input');
+    const point = outpoint({ txid: bytesToHex(input.txid), vout: input.index });
+    if (seen.has(point)) throw new Error('Duplicate shared input');
+    seen.add(point);
+    if (
+      bytesToHex(input.witnessUtxo.script) !== bytesToHex(output.script) ||
+      bytesToHex(input.witnessScript) !== bytesToHex(output.witnessScript)
+    )
+      throw new Error('Foreign multisignature input');
+    const prev = input.nonWitnessUtxo.outputs[input.index];
+    if (!prev || prev.amount !== input.witnessUtxo.amount || bytesToHex(prev.script) !== bytesToHex(output.script))
+      throw new Error('Shared previous output mismatch');
+    if (prev.amount <= 0n || prev.amount > MAX_BITCOIN_SATS) throw new Error('Invalid previous value');
+    total += prev.amount;
+  }
+  const recipient = tx.getOutput(0);
+  if (
+    recipient.amount !== BigInt(p.amount) ||
+    !recipient.script ||
+    bytesToHex(recipient.script) !== scriptPubKeyHex(p.recipient)
+  )
+    throw new Error('Shared recipient changed');
+  if (tx.outputsLength === 2) {
+    if (p.changeIndex === null) throw new Error('Missing shared change index');
+    const output = tx.getOutput(1),
+      expected = sharedBitcoinOutput(policy, 1, p.changeIndex);
+    if (
+      !output.script ||
+      bytesToHex(output.script) !== bytesToHex(expected.script) ||
+      !output.amount ||
+      output.amount < 330n
+    )
+      throw new Error('Invalid shared change');
+  } else if (p.changeIndex !== null) throw new Error('Unexpected shared change');
+  let spent = 0n;
+  for (let i = 0; i < tx.outputsLength; i++) spent += tx.getOutput(i).amount!;
+  const fee = total - spent;
+  if (
+    total > MAX_BITCOIN_SATS ||
+    fee < 0n ||
+    fee !== BigInt(p.maxFee) ||
+    fee > BigInt(sharedBitcoinVsize(policy, tx.inputsLength, tx.outputsLength) * 5000)
+  )
+    throw new Error('Shared fee exceeds policy');
+  return tx;
+}
+
+export function sharedBitcoinMessage(
+  policy: BitcoinSharedPolicy,
+  p: SharedBitcoinProposal,
+  now = Date.now(),
+): Uint8Array {
+  validateSharedBitcoinProposal(policy, p, now);
+  return jsonHash([
+    'QDWallet-BitcoinApproval/v1',
+    p.policyId,
+    p.genesis,
+    p.id,
+    p.sid,
+    p.active,
+    p.expiresAt,
+    p.psbt,
+    p.recipient,
+    p.amount,
+    p.maxFee,
+    p.changeIndex,
+    p.inputPaths.map((i) => [i.branch, i.index]),
+  ]);
+}
+
+export function combineBitcoinApproval(
+  policy: BitcoinSharedPolicy,
+  p: SharedBitcoinProposal,
+  r1: BitcoinRound[],
+  r2: BitcoinRound[],
+  r3: BitcoinRound[],
+  now = Date.now(),
+): BitcoinApproval {
+  const msg = sharedBitcoinMessage(policy, p, now);
+  const ordered = (round: BitcoinRound[]) =>
+    p.active.map((index) => {
+      const found = round.filter((r) => r.from === index);
+      if (found.length !== 1) throw new Error('Incomplete or duplicate Raccoon messages');
+      return base64.decode(found[0]!.payload);
+    });
+  const first = ordered(r1),
+    second = ordered(r2),
+    third = ordered(r3);
+  const signature = combine(
+    decodePublicKey(base64.decode(policy.raccoonPublicKey)),
+    { sid: fromHex(p.sid), act: p.active, derivationIndex: policy.derivationIndex, msg },
+    first.map((b, i) => decodeRound1(p.active[i]!, b)),
+    second.map((b, i) => decodeRound2(p.active[i]!, b, p.active)),
+    third.map((b, i) => decodeRound3(p.active[i]!, b)),
+  );
+  return { policyId: p.policyId, message: bytesToHex(msg), signature: base64.encode(encodeSignature(signature)) };
+}
+
+export function verifyBitcoinApproval(
+  policy: BitcoinSharedPolicy,
+  p: SharedBitcoinProposal,
+  approval: BitcoinApproval,
+  now = Date.now(),
+): void {
+  const msg = sharedBitcoinMessage(policy, p, now);
+  if (
+    approval.policyId !== p.policyId ||
+    approval.message !== bytesToHex(msg) ||
+    !verify(
+      decodePublicKey(base64.decode(policy.raccoonPublicKey)),
+      msg,
+      decodeSignature(base64.decode(approval.signature)),
+    )
+  )
+    throw new Error('Valid Threshold Raccoon approval is required');
+}
+
+/** Native key access is scoped by the caller's worker; every input is signed separately. */
+export function signSharedBitcoin(
+  policy: BitcoinSharedPolicy,
+  p: SharedBitcoinProposal,
+  approval: BitcoinApproval,
+  partyIndex: number,
+  withKey: <T>(branch: 0 | 1, index: number, fn: (key: Uint8Array) => T) => T,
+  now = Date.now(),
+): string {
+  verifyBitcoinApproval(policy, p, approval, now);
+  const tx = validateSharedBitcoinProposal(policy, p, now),
+    member = policy.members.find((m) => m.partyIndex === partyIndex);
+  if (!member) throw new Error('Not a native signer');
+  for (let i = 0; i < tx.inputsLength; i++) {
+    const path = p.inputPaths[i]!;
+    withKey(path.branch, path.index, (key) => {
+      if (
+        bytesToHex(secp256k1.getPublicKey(key, true)) !== bytesToHex(nativePublicKey(member, path.branch, path.index))
+      )
+        throw new Error('Native key is not enrolled');
+      tx.signIdx(key, i);
+    });
+  }
+  return base64.encode(tx.toPSBT());
+}
+
+export function finalizeSharedBitcoin(
+  policy: BitcoinSharedPolicy,
+  p: SharedBitcoinProposal,
+  approval: BitcoinApproval,
+  partials: string[],
+  now = Date.now(),
+) {
+  verifyBitcoinApproval(policy, p, approval, now);
+  const expected = validateSharedBitcoinProposal(policy, p, now);
+  if (partials.length < policy.nativeThreshold || partials.length > policy.members.length)
+    throw new Error('Native signing quorum is incomplete');
+  // Only verified signature tuples are imported. Other fields from an untrusted
+  // participant's PSBT must never replace the reviewed input metadata.
+  const signatures = new Map<number, Map<string, [Uint8Array, Uint8Array]>>();
+  for (const psbt of partials) {
+    const part = Transaction.fromPSBT(base64.decode(psbt));
+    if (bytesToHex(part.unsignedTx) !== bytesToHex(expected.unsignedTx))
+      throw new Error('Partial signature is for another transaction');
+    for (let i = 0; i < part.inputsLength; i++) {
+      const path = p.inputPaths[i]!,
+        input = part.getInput(i),
+        allowed = new Set(policy.members.map((m) => bytesToHex(nativePublicKey(m, path.branch, path.index))));
+      const reference = expected.getInput(i);
+      const hash = expected.preimageWitnessV0(i, reference.witnessScript!, 1, reference.witnessUtxo!.amount);
+      for (const [pub, sig] of input.partialSig ?? []) {
+        if (
+          !allowed.has(bytesToHex(pub)) ||
+          sig[sig.length - 1] !== 1 ||
+          !secp256k1.verify(sig.subarray(0, -1), hash, pub, { format: 'der', prehash: false, lowS: true })
+        )
+          throw new Error('Invalid native partial signature');
+        const collected = signatures.get(i) ?? new Map<string, [Uint8Array, Uint8Array]>();
+        collected.set(bytesToHex(pub), [pub, sig]);
+        signatures.set(i, collected);
+      }
+    }
+  }
+  const combined = expected;
+  for (let i = 0; i < combined.inputsLength; i++) {
+    const collected = signatures.get(i);
+    if (!collected || collected.size < policy.nativeThreshold) throw new Error('Native signing quorum is incomplete');
+    combined.updateInput(i, { partialSig: [...collected.values()] });
+  }
+  combined.finalize();
+  return { txid: combined.id, raw: bytesToHex(combined.extract()), vsize: combined.vsize };
+}

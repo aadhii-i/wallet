@@ -20,10 +20,13 @@ const (
 // newBTCRouter wires the HTTP handlers the same way main.go does.
 func newBTCRouter(h *Handlers) http.Handler {
 	r := chi.NewRouter()
+	r.Get("/v1/btc/{network}/identity", h.GetIdentity)
 	r.Get("/v1/btc/{network}/fees", h.GetFees)
 	r.Get("/v1/btc/{network}/address/{address}/utxos", h.GetUTXOs)
+	r.Get("/v1/btc/{network}/address/{address}/used", h.GetAddressUsed)
 	r.Get("/v1/btc/{network}/address/{address}/history", h.GetHistory)
 	r.Get("/v1/btc/{network}/tx/{hash}", h.GetTransaction)
+	r.Get("/v1/btc/{network}/tx/{hash}/raw", h.GetRawTransaction)
 	r.Post("/v1/btc/{network}/broadcast", h.Broadcast)
 	return r
 }
@@ -140,6 +143,7 @@ func TestFeesFallBackToTheFloorWhenEstimatesUnavailable(t *testing.T) {
 
 func TestUTXOsEndpointShape(t *testing.T) {
 	f := newFakeEsplora(t)
+	f.onText("/blocks/tip/height", "800000")
 	f.onJSON("/address/"+testMainnetAddr+"/utxo", []EsploraUTXO{
 		{
 			TxID:  testTxID,
@@ -173,10 +177,14 @@ func TestUTXOsEndpointShape(t *testing.T) {
 	if u["blockHeight"].(float64) != 799900 {
 		t.Fatalf("expected blockHeight=799900, got %v", u["blockHeight"])
 	}
+	if u["confirmations"].(float64) != 101 {
+		t.Fatalf("incorrect confirmation count: %v", u["confirmations"])
+	}
 }
 
 func TestUTXOsEmptyForUnknownAddress(t *testing.T) {
 	f := newFakeEsplora(t)
+	f.onText("/blocks/tip/height", "800000")
 	f.onJSON("/address/"+testMainnetAddr+"/utxo", []EsploraUTXO{})
 	router := newBTCRouter(NewHandlers(f.service(NetworkMainnet, 1, 500)))
 

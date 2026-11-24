@@ -129,6 +129,9 @@ importers:
       '@qd/blockchain':
         specifier: workspace:*
         version: link:../blockchain
+      '@qd/qd-crypto':
+        specifier: workspace:*
+        version: link:../qd-crypto
       '@qd/shared-types':
         specifier: workspace:*
         version: link:../shared-types
@@ -138,6 +141,9 @@ importers:
       '@scure/base':
         specifier: 2.4.0
         version: 2.4.0
+      '@scure/bip32':
+        specifier: 2.4.0
+        version: 2.4.0
       '@scure/btc-signer':
         specifier: 2.4.1
         version: 2.4.1
@@ -145,6 +151,9 @@ importers:
       '@scure/bip39':
         specifier: 2.4.0
         version: 2.4.0
+      '@types/node':
+        specifier: 24.13.6
+        version: 24.13.6
       typescript:
         specifier: 6.0.3
         version: 6.0.3

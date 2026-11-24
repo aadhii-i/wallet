@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "sideEffects": false,
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run --passWithNoTests"
@@ -13,13 +15,16 @@
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@qd/blockchain": "workspace:*",
+    "@qd/qd-crypto": "workspace:*",
     "@qd/shared-types": "workspace:*",
     "@qd/wallet-core": "workspace:*",
     "@scure/base": "2.4.0",
+    "@scure/bip32": "2.4.0",
     "@scure/btc-signer": "2.4.1"
   },
   "devDependencies": {
     "@scure/bip39": "2.4.0",
+    "@types/node": "24.13.6",
     "typescript": "6.0.3",
     "vitest": "5.0.5"
   }

@@ -24,6 +24,23 @@ func NewHandlers(svc *Service) *Handlers {
 	return &Handlers{svc: svc}
 }
 
+func (h *Handlers) GetIdentity(w http.ResponseWriter, r *http.Request) {
+	network, ok := h.resolve(w, r)
+	if !ok {
+		return
+	}
+	body, err := h.svc.esplora.get(r.Context(), "/block-height/0")
+	expected := "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+	if network == NetworkTestnet4 {
+		expected = "00000000da84f2bafbbc53dee25a72ae507ff4914b867c565be350b0da8bf043"
+	}
+	if err != nil || strings.TrimSpace(string(body)) != expected {
+		httpx.WriteProblem(w, r, 503, "BTC_NETWORK_MISMATCH", "Network unavailable", "Bitcoin upstream identity does not match configuration")
+		return
+	}
+	httpx.WriteJSON(w, 200, map[string]string{"genesis": expected})
+}
+
 // GetFees implements GET /v1/btc/{network}/fees.
 func (h *Handlers) GetFees(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.resolve(w, r); !ok {
@@ -54,6 +71,25 @@ func (h *Handlers) GetUTXOs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{"utxos": utxos})
+}
+
+// GetAddressUsed includes coinbase and spent history, unlike display filtering.
+func (h *Handlers) GetAddressUsed(w http.ResponseWriter, r *http.Request) {
+	network, ok := h.resolve(w, r)
+	if !ok {
+		return
+	}
+	address := chi.URLParam(r, "address")
+	if ValidateAddress(address, network) != nil {
+		httpx.BadRequest(w, r, "INVALID_ADDRESS", "invalid address")
+		return
+	}
+	transactions, err := h.svc.esplora.GetAddressTxs(r.Context(), address, "")
+	if err != nil {
+		httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "BTC_DISCOVERY_UNAVAILABLE", "Discovery unavailable", "could not determine address activity")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]bool{"used": len(transactions) > 0})
 }
 
 // GetHistory implements GET /v1/btc/{network}/address/{address}/history.
@@ -105,6 +141,24 @@ func (h *Handlers) GetTransaction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.WriteJSON(w, http.StatusOK, detail)
+}
+
+// Broadcast implements POST /v1/btc/{network}/broadcast with body {"raw":"<hex>"}.
+func (h *Handlers) GetRawTransaction(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.resolve(w, r); !ok {
+		return
+	}
+	hash := chi.URLParam(r, "hash")
+	if !validTxID(hash) {
+		httpx.BadRequest(w, r, "INVALID_TXID", "invalid transaction id")
+		return
+	}
+	raw, err := h.svc.esplora.GetRawTransaction(r.Context(), hash)
+	if err != nil {
+		httpx.WriteProblem(w, r, http.StatusServiceUnavailable, "BTC_PREVOUT_UNAVAILABLE", "Previous transaction unavailable", "could not verify the previous transaction")
+		return
+	}
+	httpx.WriteJSON(w, http.StatusOK, map[string]string{"raw": raw})
 }
 
 // Broadcast implements POST /v1/btc/{network}/broadcast with body {"raw":"<hex>"}.

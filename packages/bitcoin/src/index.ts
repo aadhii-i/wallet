@@ -5,3 +5,5 @@ export * from './utxo';
 export * from './psbt';
 export * from './signer';
 export * from './adapter';
+export * from './validation';
+export * from './shared';

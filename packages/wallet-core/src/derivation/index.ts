@@ -96,7 +96,7 @@ export function btcAccountPath(
 
 export interface BitcoinDescriptor {
   /**
-   * Account-level descriptor covering every address of this wallet:
+   * Legacy receiving descriptor (does not include the new internal branch):
    * `wpkh([fingerprint/84'/0'/0']xpub.../0/*)` (BIP-84) or
    * `tr([fingerprint/86'/0'/0']xpub.../0/*)` (BIP-86).
    *
@@ -135,8 +135,20 @@ export function btcAccountDescriptor(
   }
 }
 
+/** Internal descriptor paired with the preserved legacy receive descriptor. */
+export function btcInternalDescriptor(master: HDKey, account: number, addressType: BitcoinAddressType, network: BitcoinNetworkName): BitcoinDescriptor {
+  const path = btcChangePath(account, 0, addressType, network).split('/').slice(0, 4).join('/');
+  const node = master.derive(path);
+  try {
+    const xpub = encodeExtendedPublicKey(node, network);
+    const fingerprint = bytesToHex(u32be(master.fingerprint));
+    const script = addressType === 'p2tr' ? 'tr' : 'wpkh';
+    return { descriptor: `${script}([${fingerprint}${path.slice(1)}]${xpub}/1/*)`, xpub, fingerprint };
+  } finally { node.wipePrivateData(); }
+}
+
 /** Serializes an extended public key with the version bytes of its network. */
-function encodeExtendedPublicKey(node: HDKey, network: BitcoinNetworkName): string {
+export function encodeExtendedPublicKey(node: HDKey, network: BitcoinNetworkName): string {
   const publicKey = node.publicKey;
   const chainCode = node.chainCode;
   if (!publicKey || !chainCode) throw new Error('Public key unavailable');
@@ -182,6 +194,40 @@ export function deriveBtcNode(
   network: BitcoinNetworkName = 'mainnet',
 ): HDKey {
   return master.derive(btcDerivationPath(index, addressType, network));
+}
+
+/** Version 1 internal branch. Legacy receive paths remain unchanged. */
+export function btcChangePath(account: number, index: number, addressType: BitcoinAddressType, network: BitcoinNetworkName): string {
+  assertIndex(account);
+  assertIndex(index);
+  const purpose = BTC_PURPOSE[addressType];
+  if (purpose === undefined) throw new RangeError('Unsupported Bitcoin address type');
+  return `m/${purpose}'/${bitcoinCoinType(network)}'/${account}'/1/${index}`;
+}
+
+export function deriveBtcChangeNode(master: HDKey, account: number, index: number, addressType: BitcoinAddressType, network: BitcoinNetworkName): HDKey {
+  return master.derive(btcChangePath(account, index, addressType, network));
+}
+
+export interface BitcoinSharedContext {
+  walletId: string;
+  accountId: string;
+  keygenId: string;
+  membershipVersion: number;
+  network: BitcoinNetworkName;
+}
+
+/** Separate hardened namespace: never reuse a personal Bitcoin key. */
+export function btcSharedRootPath(context: BitcoinSharedContext): string {
+  for (const id of [context.walletId, context.accountId, context.keygenId]) {
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid shared Bitcoin identity');
+  }
+  assertIndex(context.membershipVersion);
+  const digest = sha256(utf8ToBytes(JSON.stringify(['QDWallet-BitcoinNative/v1', context.walletId,
+    context.accountId, context.keygenId, context.membershipVersion, context.network])));
+  const words = new DataView(digest.buffer, digest.byteOffset, digest.byteLength);
+  const scope = Array.from({length:8}, (_, i) => `${words.getUint32(i*4) & MAX_ACCOUNT_INDEX}'`);
+  return `m/48'/${bitcoinCoinType(context.network)}'/0'/2'/${scope.join('/')}`;
 }
 
 /** RIPEMD160(SHA256(data)) — the hash used by P2WPKH witness programs. */

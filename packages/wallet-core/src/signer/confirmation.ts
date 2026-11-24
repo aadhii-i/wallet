@@ -9,6 +9,9 @@ export const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 export function hashPayload(payload: SigningPayload): Hex {
   let canonical: string;
   switch (payload.kind) {
+    case 'bitcoin-shared':
+      canonical=JSON.stringify(['bitcoin-shared-v1',payload.policyId,payload.message]);
+      break;
     case 'evm-transaction':
       canonical = `evm-transaction|${payload.chainId}|${payload.from.toLowerCase()}|${payload.serializedUnsigned.toLowerCase()}`;
       break;
@@ -16,7 +19,9 @@ export function hashPayload(payload: SigningPayload): Hex {
       canonical = `evm-personal-message|${payload.from.toLowerCase()}|${payload.message.toLowerCase()}`;
       break;
     case 'btc-psbt':
-      canonical = `btc-psbt|${payload.network}|${payload.addressType}|${payload.from.toLowerCase()}|${payload.psbt}`;
+      canonical = JSON.stringify(['btc-psbt-v2', payload.network, payload.addressType, payload.from, payload.psbt,
+        payload.review ? [payload.review.recipient, payload.review.amount, payload.review.maxFee, payload.review.changeAddress,
+          payload.review.changeIndex ?? null, payload.review.inputChanges] : null]);
       break;
     case 'hedera-transfer':
       canonical = `hedera-transfer|${payload.fromAccountId}|${payload.toAccountId}|${payload.amountTinybars}|${payload.transactionBytes}`;

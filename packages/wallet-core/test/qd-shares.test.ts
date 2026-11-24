@@ -221,6 +221,20 @@ describe('QdShareStore (encrypted at rest, separate Argon2id salt)', () => {
     await expectCode(new QdShareStore(kv, opts).unlock('wrong password 123!'), 'STORE_LOCKED');
   });
 
+  it('retains the pinned Bitcoin share through source replacement and password rotation',async()=>{
+    const kv=memoryKv(),store=new QdShareStore(kv,opts),id='cd'.repeat(32);
+    await store.unlock(PW);await store.putShare(info,shareBytes);
+    await store.archiveBitcoinShare(id,WALLET);
+    const replacement=encodeKeyShare(dealerKeyGen(2,3).shares[0]!);
+    await store.putShare({...info,keygenId:uuid(99)},replacement);
+    await store.archiveBitcoinShare(id,WALLET);
+    await store.rekey('another strong pass 42!');store.lock();
+    const restored=new QdShareStore(kv,opts);await restored.unlock('another strong pass 42!');
+    expect(await restored.shareBytes(`bitcoin:${id}`)).toEqual(shareBytes);
+    expect((await restored.shareInfo(`bitcoin:${id}`))!.keygenId).toBe(KEYGEN);
+    expect(await restored.shareBytes(WALLET)).toEqual(replacement);
+  });
+
   it('detects tampering with the authenticated metadata', async () => {
     const kv = memoryKv();
     const store = new QdShareStore(kv, opts);

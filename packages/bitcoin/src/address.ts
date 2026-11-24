@@ -16,7 +16,7 @@ export function hrpForChain(chain: BitcoinChain): 'bc' | 'tb' {
 
 export interface BitcoinAddressCheck {
   valid: boolean;
-  type?: BitcoinAddressType;
+  type?: BitcoinAddressType | 'p2wsh';
   /** Canonical (lowercase) form. */
   normalized?: string;
   reason?: 'format' | 'checksum' | 'network';
@@ -34,6 +34,7 @@ export function checkBitcoinAddress(input: string, network: BitcoinNetwork): Bit
     if (decoded.hrp !== hrpForChain(network.bitcoin.chain)) {
       return { valid: false, reason: 'network', normalized: trimmed.toLowerCase() };
     }
+    if (decoded.version===0 && decoded.program.length===32) return {valid:true,type:'p2wsh',normalized:trimmed};
     if (decoded.type === 'other' || !network.bitcoin.addressTypes.includes(decoded.type)) {
       return { valid: false, reason: 'format', normalized: trimmed.toLowerCase() };
     }
@@ -45,6 +46,13 @@ export function checkBitcoinAddress(input: string, network: BitcoinNetwork): Bit
       reason: message.toLowerCase().includes('checksum') ? 'checksum' : 'format',
     };
   }
+}
+
+export function isValidBitcoinDestination(address: string, chain: BitcoinChain): boolean {
+  try {
+    const decoded=decodeBitcoinAddress(address);
+    return decoded.hrp===hrpForChain(chain) && (decoded.type!=='other'||(decoded.version===0&&decoded.program.length===32));
+  } catch {return false;}
 }
 
 /** `scriptPubKey` for a segwit address: `OP_n <program>`. */

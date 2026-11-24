@@ -30,6 +30,7 @@ import (
 
 	"github.com/qdwallet/wallet-api/internal/account"
 	"github.com/qdwallet/wallet-api/internal/auth"
+	"github.com/qdwallet/wallet-api/internal/bitcoinshared"
 	"github.com/qdwallet/wallet-api/internal/blockchain/btc"
 	"github.com/qdwallet/wallet-api/internal/blockchain/evm"
 	"github.com/qdwallet/wallet-api/internal/blockchain/hedera"
@@ -138,6 +139,14 @@ func run() error {
 		return fmt.Errorf("unknown STORE %q", cfg.Store)
 	}
 	defer st.Close()
+	bitcoinSnapshot := ""
+	if cfg.StoreSnapshot != "" {
+		bitcoinSnapshot = cfg.StoreSnapshot + ".bitcoin-shared"
+	}
+	bitcoinRelay, err := bitcoinshared.New(st, pgPool, bitcoinSnapshot)
+	if err != nil {
+		return err
+	}
 
 	// --- EVM network registry + RPC provider pools (§25) ---------------------
 	upstreamCounts := map[int64]int{}
@@ -421,6 +430,7 @@ func run() error {
 		// Shared wallets: participants, proposals and signed approvals.
 		if cfg.EnableSharedWallets {
 			sharedHandlers.Routes(r)
+			bitcoinRelay.Routes(r)
 		}
 
 		r.Group(func(r chi.Router) {
@@ -429,9 +439,12 @@ func run() error {
 
 			// Bitcoin: purpose-built endpoints only, no RPC passthrough.
 			r.Get("/v1/btc/{network}/fees", btcHandlers.GetFees)
+			r.Get("/v1/btc/{network}/identity", btcHandlers.GetIdentity)
 			r.Get("/v1/btc/{network}/address/{address}/utxos", btcHandlers.GetUTXOs)
+			r.Get("/v1/btc/{network}/address/{address}/used", btcHandlers.GetAddressUsed)
 			r.Get("/v1/btc/{network}/address/{address}/history", btcHandlers.GetHistory)
 			r.Get("/v1/btc/{network}/tx/{hash}", btcHandlers.GetTransaction)
+			r.Get("/v1/btc/{network}/tx/{hash}/raw", btcHandlers.GetRawTransaction)
 			r.Post("/v1/btc/{network}/broadcast", btcHandlers.Broadcast)
 
 			// Hedera: Mirror Node balance lookup.

@@ -215,8 +215,21 @@ func (s *Service) UTXOs(ctx context.Context, address string) ([]UTXO, error) {
 	if err != nil {
 		return nil, fmt.Errorf("btc: utxos: %w", err)
 	}
+	if len(raw) > 10000 {
+		return nil, errors.New("UTXO response exceeds the wallet limit")
+	}
+	tip, err := s.esplora.GetTipHeight(ctx)
+	if err != nil {
+		return nil, errors.New("could not determine UTXO confirmations")
+	}
+	seen := make(map[string]bool)
 	items := make([]UTXO, 0, len(raw))
 	for _, u := range raw {
+		key := fmt.Sprintf("%s:%d", strings.ToLower(u.TxID), u.Vout)
+		if !validTxID(u.TxID) || u.Vout < 0 || uint64(u.Vout) > 0xffffffff || u.Value <= 0 || u.Value > 2100000000000000 || seen[key] {
+			return nil, errors.New("invalid upstream UTXO")
+		}
+		seen[key] = true
 		item := UTXO{
 			TxID:  u.TxID,
 			Vout:  u.Vout,
@@ -227,7 +240,10 @@ func (s *Service) UTXOs(ctx context.Context, address string) ([]UTXO, error) {
 			// leave this empty; service_test.go covers this behaviour.
 		}
 		if u.Status.Confirmed {
-			item.Confirmations = 1 // Esplora does not give a conf count
+			if u.Status.BlockHeight <= 0 || u.Status.BlockHeight > tip {
+				return nil, errors.New("invalid UTXO block height")
+			}
+			item.Confirmations = tip - u.Status.BlockHeight + 1
 			if u.Status.BlockHeight > 0 {
 				h := u.Status.BlockHeight
 				item.BlockHeight = &h

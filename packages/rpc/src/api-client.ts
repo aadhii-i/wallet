@@ -33,6 +33,7 @@ import {
 } from './shared-wallets';
 import {
   KeygenRefusedError,
+  sha256Hex,
   envelopeHashHex,
   envelopesDigestHex,
   fromB64url,
@@ -339,6 +340,30 @@ export class ApiClient {
       'GET',
       `/v1/btc/${network}/tx/${encodeURIComponent(hash)}`,
     );
+  }
+  btcRawTransaction(network: BitcoinNetworkName, hash: string) {
+    return this.json<{ raw: string }>('GET', `/v1/btc/${network}/tx/${encodeURIComponent(hash)}/raw`);
+  }
+  btcAddressUsed(network: BitcoinNetworkName, address: string) {
+    return this.json<{ used: boolean }>('GET', `/v1/btc/${network}/address/${encodeURIComponent(address)}/used`);
+  }
+  btcIdentity(network: BitcoinNetworkName) {
+    return this.json<{ genesis: string }>('GET', `/v1/btc/${network}/identity`);
+  }
+
+  bitcoinSharedMessages(walletId: string, accountId: string, session = 'enrollment') {
+    return this.json<{ messages: { id: string; from: string; kind: string; session: string; payload: string; signature: string; createdAt: string }[] }>(
+      'GET', `/v1/shared-wallets/${encodeURIComponent(walletId)}/bitcoin/${encodeURIComponent(accountId)}?session=${encodeURIComponent(session)}`);
+  }
+
+  async postBitcoinShared(walletId: string, accountId: string, keygenId: string, membershipVersion: number, kind: string, session: string, content: unknown) {
+    const payload = toB64url(new TextEncoder().encode(JSON.stringify(content)));
+    if (payload.length > 1_400_000) throw new Error('Bitcoin signing message exceeds the coordinator limit');
+    const digest = await sha256Hex(new TextEncoder().encode(payload));
+    const message = JSON.stringify(['QDWallet-BitcoinRelay/v1',walletId,accountId,keygenId,membershipVersion,kind,session,digest]);
+    const signature = await this.deviceSign(message);
+    return this.json('POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/bitcoin/${encodeURIComponent(accountId)}`,
+      { keygenId,membershipVersion,kind,session,payload,signature });
   }
   btcBroadcast(network: BitcoinNetworkName, rawHex: string) {
     return this.json<ApiBtcBroadcastResult>('POST', `/v1/btc/${network}/broadcast`, { raw: rawHex });

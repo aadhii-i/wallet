@@ -4,11 +4,13 @@ import type { BitcoinChain, Page, TxLookup } from '@qd/blockchain';
 import type { BitcoinDataSource, BtcFeeEstimates, BtcUtxo } from '@qd/bitcoin';
 import { scriptPubKeyHex } from '@qd/bitcoin';
 import { getApi } from './api';
+import { bitcoinWalletHistory } from './bitcoin-history';
+import { ApiError } from '@qd/rpc';
 
 /**
  * Sats arrive as decimal strings; the adapter works in bigint only.
- * The scriptPubKey is computed from the address since Esplora's UTXO endpoint
- * does not include it.
+ * The listing's script is a claim based on the requested address, not proof.
+ * Selected coins must subsequently match raw previous transaction bytes.
  */
 function toUtxo(u: ApiBtcUtxo, scriptPubKey: string): BtcUtxo {
   return {
@@ -30,6 +32,13 @@ export function createBitcoinDataSource(chain: BitcoinNetworkName): BitcoinDataS
   return {
     chain,
 
+    async getRawTransaction(txid: string): Promise<string> {
+      return (await (await getApi()).btcRawTransaction(chain, txid)).raw;
+    },
+    async isAddressUsed(address: string): Promise<boolean> {
+      return (await (await getApi()).btcAddressUsed(chain, address)).used;
+    },
+
     async getTipHeight(): Promise<bigint> {
       const { fees } = await (await getApi()).btcFees(chain);
       return BigInt(fees.tipHeight);
@@ -39,7 +48,8 @@ export function createBitcoinDataSource(chain: BitcoinNetworkName): BitcoinDataS
       const { utxos } = await (await getApi()).btcUtxos(chain, address);
       // Esplora's UTXO endpoint does not include scriptPubKey; we build it
       // from the address. Every UTXO from /address/{address}/utxo pays that
-      // address, so we compute the script once for all returned UTXOs.
+      // address according to the provider. Raw previous-output verification
+      // independently checks this claim before any signature is released.
       const spk = scriptPubKeyHex(address);
       return utxos.map(u => toUtxo(u, spk));
     },
@@ -64,16 +74,26 @@ export function createBitcoinDataSource(chain: BitcoinNetworkName): BitcoinDataS
           ...(tx.blockHeight !== undefined ? { blockNumber: BigInt(tx.blockHeight) } : {}),
           ...(tx.fee !== undefined ? { fee: BigInt(tx.fee) } : {}),
         };
-      } catch {
+      } catch (error) {
         // A mempool transaction the node has not indexed yet is not an error,
         // it is "not found"; the adapter polls until it appears or times out.
-        return null;
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
       }
     },
 
     async getHistory(address: string, cursor?: string): Promise<Page<ActivityItem>> {
       const res = await (await getApi()).btcHistory(chain, address, cursor);
       return { items: res.items, ...(res.nextCursor ? { nextCursor: res.nextCursor } : {}) };
+    },
+
+    async getWalletHistory(addresses: readonly string[], cursor?: string): Promise<Page<ActivityItem>> {
+      const api = await getApi();
+      return bitcoinWalletHistory(addresses, cursor,
+        async (address, next) => {
+          const result = await api.btcHistory(chain, address, next);
+          return { items: result.items, ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}) };
+        }, txid => api.btcTransaction(chain, txid));
     },
 
     async broadcast(rawHex: string): Promise<string> {

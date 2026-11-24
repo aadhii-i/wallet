@@ -17,17 +17,23 @@ import {
   type TxLookup,
 } from '@qd/blockchain';
 import type { SignatureResult, SigningPayload } from '@qd/wallet-core';
+import { bytesToHex } from '@qd/wallet-core';
+import { Transaction } from '@scure/btc-signer';
+import { base64 } from '@scure/base';
 import { checkBitcoinAddress } from './address';
 import { FEE_TARGETS, clampFeeRate, etaSeconds } from './fees';
 import { buildPsbt, describePsbt, extractSignedTx } from './psbt';
 import { selectCoins } from './utxo';
-import type { BitcoinDataSource, BitcoinFeeParams, BitcoinUnsignedTx } from './types';
+import type { BitcoinDataSource, BitcoinFeeParams, BitcoinUnsignedTx, BitcoinWalletScope, BtcUtxo } from './types';
+import { outpoint, validateUtxos, verifyPreviousOutput } from './validation';
+import { estimateVsize } from './fees';
 
 export interface BitcoinAdapterOptions {
   network: BitcoinNetwork;
   dataSource: BitcoinDataSource;
   /** Preferred address type for spending. Defaults to the network's default. */
   addressType?: BitcoinAddressType;
+  wallet?: BitcoinWalletScope;
   /** Test hook. */
   now?: () => number;
 }
@@ -40,12 +46,14 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
   private readonly dataSource: BitcoinDataSource;
   private readonly addressType: BitcoinAddressType;
   private readonly now: () => number;
+  private readonly wallet: BitcoinWalletScope | undefined;
 
   constructor(opts: BitcoinAdapterOptions) {
     this.network = opts.network;
     this.dataSource = opts.dataSource;
     this.addressType = opts.addressType ?? opts.network.bitcoin.defaultAddressType;
     this.now = opts.now ?? Date.now;
+    this.wallet = opts.wallet;
   }
 
   listAssets(): readonly Asset[] {
@@ -65,7 +73,7 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
   }
 
   async getBalance(address: string): Promise<bigint> {
-    const utxos = await this.dataSource.getUtxos(address);
+    const utxos = await this.coins(address, false);
     return utxos.reduce((acc, u) => acc + u.value, 0n);
   }
 
@@ -89,7 +97,63 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
   }
 
   async getTransactionHistory(address: string, cursor?: string): Promise<Page<ActivityItem>> {
+    if (this.wallet && this.dataSource.getWalletHistory) {
+      const discovery = await this.wallet.discover();
+      if (discovery.addresses[0]?.address !== address) throw new Error('Wallet account changed');
+      return this.dataSource.getWalletHistory(
+        discovery.addresses.map((a) => a.address),
+        cursor,
+      );
+    }
     return this.dataSource.getHistory(address, cursor);
+  }
+
+  private async coins(from: string, spendable = true): Promise<BtcUtxo[]> {
+    const addresses = this.wallet ? (await this.wallet.discover()).addresses : [{ address: from }];
+    if (addresses[0]?.address !== from) throw new Error('Wallet account changed');
+    const unavailable = spendable && this.wallet ? await this.wallet.unavailable() : new Set<string>();
+    const coins: BtcUtxo[] = [];
+    for (const entry of addresses) {
+      for (const coin of await this.dataSource.getUtxos(entry.address)) {
+        coins.push({
+          ...coin,
+          address: entry.address,
+          ...('changeIndex' in entry && entry.changeIndex !== undefined ? { changeIndex: entry.changeIndex } : {}),
+        });
+      }
+    }
+    validateUtxos(coins);
+    return coins.filter((c) => !unavailable.has(outpoint(c)));
+  }
+
+  async maxAmount(from: string): Promise<bigint> {
+    const coins = (await this.coins(from)).filter(
+      (c) => c.confirmations > 0 && (!c.coinbase || c.confirmations >= 100),
+    );
+    if (!coins.length || coins.length > 200) throw new Error('No supported spendable coin set');
+    const rate = clampFeeRate((await this.dataSource.getFees()).aggressive);
+    const total = coins.reduce((n, c) => n + c.value, 0n);
+    const maximum = total - BigInt(Math.ceil(estimateVsize(coins.length, this.addressType, 1) * rate));
+    return maximum > 0n ? maximum : 0n;
+  }
+
+  /** Re-read spend status; raw previous bytes alone cannot prove unspentness. */
+  async revalidate(unsigned: BitcoinUnsignedTx): Promise<void> {
+    for (const address of new Set(unsigned.inputs.map((i) => i.address ?? unsigned.from))) {
+      const current = await this.dataSource.getUtxos(address);
+      validateUtxos(current);
+      for (const input of unsigned.inputs.filter((i) => (i.address ?? unsigned.from) === address)) {
+        const found = current.find((u) => outpoint(u) === outpoint(input));
+        if (
+          !found ||
+          found.value !== input.value ||
+          found.scriptPubKey !== input.scriptPubKey ||
+          found.confirmations < 1
+        ) {
+          throw new Error('Selected Bitcoin coins changed or are no longer confirmed and unspent; review again');
+        }
+      }
+    }
   }
 
   async estimateFee(intent: TransferIntent): Promise<FeeQuote<BitcoinFeeParams>> {
@@ -102,10 +166,7 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
         retryable: false,
       });
     }
-    const [utxos, fees] = await Promise.all([
-      this.dataSource.getUtxos(intent.from),
-      this.dataSource.getFees(),
-    ]);
+    const [utxos, fees] = await Promise.all([this.coins(intent.from), this.dataSource.getFees()]);
     const rates: Record<FeeTier, number> = {
       low: fees.low,
       market: fees.market,
@@ -114,7 +175,13 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
     const options = {} as Record<FeeTier, FeeOption & { params: BitcoinFeeParams }>;
     for (const tier of ['low', 'market', 'aggressive'] as const) {
       const feeRate = clampFeeRate(rates[tier]);
-      const selection = selectCoins(utxos, intent.amount, feeRate, this.addressType);
+      const selection = selectCoins(
+        utxos,
+        intent.amount,
+        feeRate,
+        this.addressType,
+        checkBitcoinAddress(intent.to, this.network).type,
+      );
       options[tier] = {
         tier,
         maxFee: selection.fee,
@@ -130,15 +197,32 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
     intent: TransferIntent,
     fee: FeeOption & { params: BitcoinFeeParams },
   ): Promise<BitcoinUnsignedTx> {
-    const utxos = await this.dataSource.getUtxos(intent.from);
-    const selection = selectCoins(utxos, intent.amount, fee.params.feeRate, this.addressType);
+    const utxos = await this.coins(intent.from);
+    const selection = selectCoins(
+      utxos,
+      intent.amount,
+      fee.params.feeRate,
+      this.addressType,
+      checkBitcoinAddress(intent.to, this.network).type,
+    );
+    if (selection.fee > fee.maxFee) throw new Error('Bitcoin fee changed; request a fresh quote');
+    if (!this.wallet || !this.dataSource.getRawTransaction)
+      throw new Error('Recoverable change and previous transaction verification are required');
+    if (!this.validateAddress(intent.to).valid) throw new Error('Invalid recipient network or address');
+    const previous = new Map<string, string>();
+    for (const coin of selection.inputs) {
+      if (!previous.has(coin.txid)) previous.set(coin.txid, await this.dataSource.getRawTransaction(coin.txid));
+      coin.previousTx = previous.get(coin.txid)!;
+      verifyPreviousOutput(coin);
+    }
+    const change = selection.change > 0n ? await this.wallet.change() : undefined;
     return buildPsbt({
       network: this.network,
       addressType: this.addressType,
       from: intent.from,
       to: intent.to,
-      // Change reuse is a documented privacy follow-up, not a fund risk.
-      changeAddress: intent.from,
+      changeAddress: change?.address ?? intent.from,
+      ...(change ? { changeIndex: change.index } : {}),
       amount: intent.amount,
       selection,
     });
@@ -159,12 +243,17 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
       from: unsigned.from,
       addressType: unsigned.addressType,
       psbt: unsigned.psbt,
+      review: unsigned.review,
     };
   }
 
   /** Turns the worker's signed PSBT into the raw transaction Core broadcasts. */
   assembleSigned(unsigned: BitcoinUnsignedTx, sig: SignatureResult): SignedTx {
     if (sig.kind !== 'btc-psbt') throw new Error('Unexpected signature kind');
+    const expected = Transaction.fromPSBT(base64.decode(unsigned.psbt)).unsignedTx;
+    const returned = Transaction.fromPSBT(base64.decode(sig.psbt)).unsignedTx;
+    if (bytesToHex(expected) !== bytesToHex(returned))
+      throw new Error('Signed Bitcoin transaction differs from the reviewed payment');
     const { rawHex, txid } = extractSignedTx(sig.psbt);
     return { networkId: unsigned.networkId, raw: `0x${rawHex}`, hash: `0x${txid}` };
   }
@@ -186,10 +275,7 @@ export class BitcoinAdapter implements BlockchainAdapter<BitcoinUnsignedTx, Bitc
     return txid;
   }
 
-  async waitForFinal(
-    hash: string,
-    opts: { timeoutMs?: number; signal?: AbortSignal } = {},
-  ): Promise<TxLookup> {
+  async waitForFinal(hash: string, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<TxLookup> {
     const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
     const deadline = Date.now() + timeoutMs;
     for (;;) {

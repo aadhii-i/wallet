@@ -13,6 +13,7 @@ import { EvmAdapter, NonceTracker } from '@qd/evm';
 import { proxyRequest } from '@qd/rpc';
 import { getApi } from './api';
 import { createBitcoinDataSource } from './bitcoin-api';
+import { bitcoinWalletScope } from './bitcoin-wallet';
 import { createHederaAdapter } from './hedera-api';
 import { useMeta } from './store';
 
@@ -55,17 +56,19 @@ export function getEvmAdapter(networkId: string, customRpc?: string): EvmAdapter
  * backend is the operator's Core node, reached through wallet-api. `addressType`
  * selects the spending scheme, so BIP-84 and BIP-86 get separate instances.
  */
-export function getBitcoinAdapter(networkId: string, addressType?: BitcoinAddressType): BitcoinAdapter {
+export function getBitcoinAdapter(networkId: string, addressType?: BitcoinAddressType, account = useMeta.getState().selectedIndex): BitcoinAdapter {
   const network = registry.require(networkId);
   if (network.family !== 'bitcoin') throw new Error(`Not a Bitcoin network: ${networkId}`);
   const btc = network as BitcoinNetwork;
   const type = addressType ?? btc.bitcoin.defaultAddressType;
-  const key = `${networkId}|${type}`;
+  const key = `${networkId}|${type}|${account}`;
   let a = btcCache.get(key);
   if (!a) {
+    const source = createBitcoinDataSource(btc.bitcoin.chain);
     a = new BitcoinAdapter({
       network: btc,
-      dataSource: createBitcoinDataSource(btc.bitcoin.chain),
+      dataSource: source,
+      wallet: bitcoinWalletScope(account, btc.bitcoin.chain, type, source),
       addressType: type,
     });
     btcCache.set(key, a);

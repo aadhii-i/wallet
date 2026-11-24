@@ -128,6 +128,9 @@ func (e *Esplora) GetTipHeight(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("btc/esplora: tip height: %w", err)
 	}
 	h, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+	if err == nil && h < 0 {
+		return 0, fmt.Errorf("btc/esplora: invalid negative tip height")
+	}
 	if err != nil {
 		return 0, fmt.Errorf("btc/esplora: tip height: parse %q: %w", body, err)
 	}
@@ -180,6 +183,9 @@ func (e *Esplora) GetAddressUTXOs(ctx context.Context, address string) ([]Esplor
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("btc/esplora: utxos %s: decode: %w", AddressFingerprint(address), err)
 	}
+	if out == nil {
+		return nil, fmt.Errorf("btc/esplora: invalid null UTXO response")
+	}
 	return out, nil
 }
 
@@ -203,6 +209,9 @@ func (e *Esplora) GetAddressTxs(ctx context.Context, address, afterTxID string) 
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, fmt.Errorf("btc/esplora: txs %s: decode: %w", AddressFingerprint(address), err)
 	}
+	if out == nil {
+		return nil, fmt.Errorf("btc/esplora: invalid null history response")
+	}
 	return out, nil
 }
 
@@ -224,6 +233,25 @@ func (e *Esplora) GetTransaction(ctx context.Context, txid string) (*EsploraTx, 
 		return nil, fmt.Errorf("btc/esplora: tx %s: decode: %w", txid[:min8(len(txid))], err)
 	}
 	return &out, nil
+}
+
+// BroadcastTx submits a signed raw transaction and returns its txid.
+// GetRawTransaction supplies bytes for independent client-side txid/output checks.
+func (e *Esplora) GetRawTransaction(ctx context.Context, txid string) (string, error) {
+	body, err := e.get(ctx, "/tx/"+txid+"/hex")
+	if err != nil {
+		return "", err
+	}
+	raw := strings.TrimSpace(string(body))
+	if len(raw) == 0 || len(raw) > 8_000_000 || len(raw)%2 != 0 {
+		return "", ErrInvalidTx
+	}
+	for i := range raw {
+		if !isHexDigit(raw[i]) {
+			return "", ErrInvalidTx
+		}
+	}
+	return raw, nil
 }
 
 // BroadcastTx submits a signed raw transaction and returns its txid.

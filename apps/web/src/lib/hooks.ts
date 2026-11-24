@@ -73,11 +73,11 @@ export function useAdapter(): BlockchainAdapter {
   );
   return useMemo(
     () => {
-      if (network.family === 'bitcoin') return getBitcoinAdapter(network.id, btcAddressType);
+      if (network.family === 'bitcoin') return getBitcoinAdapter(network.id, btcAddressType, account?.index);
       if (network.family === 'hedera') return getHederaAdapter(network.id, hederaAccountId);
       return getEvmAdapter(network.id, custom);
     },
-    [network, custom, btcAddressType, hederaAccountId],
+    [network, custom, btcAddressType, hederaAccountId, account?.index],
   );
 }
 
@@ -98,11 +98,12 @@ export function useEvmAdapter(): EvmAdapter {
 /** The Bitcoin adapter for the selected network and address type. */
 export function useBitcoinAdapter(): BitcoinAdapter {
   const network = useNetwork();
+  const account = useSelectedAccount();
   const addressType = useMeta((s) => s.btcAddressType);
   return useMemo(() => {
     if (network.family !== 'bitcoin') throw new Error(`Not a Bitcoin network: ${network.id}`);
-    return getBitcoinAdapter(network.id, addressType);
-  }, [network, addressType]);
+    return getBitcoinAdapter(network.id, addressType, account?.index);
+  }, [network, addressType, account?.index]);
 }
 
 /**
@@ -263,7 +264,7 @@ export function useActivity(account: AccountMeta | undefined) {
           flags: [] as 'suspected_poisoning'[],
         }));
       }
-      if (network.family === 'bitcoin') return (await api.btcHistory(network.bitcoin.chain, address!)).items;
+      if (network.family === 'bitcoin') return (await getBitcoinAdapter(network.id, useMeta.getState().btcAddressType, account!.index).getTransactionHistory(address!)).items;
       return (await api.activity(account!.apiId!, network.id)).items;
     },
   });

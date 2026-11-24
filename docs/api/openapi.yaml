@@ -365,6 +365,28 @@ paths:
                   utxos: { type: array, items: { $ref: "#/components/schemas/BtcUtxo" } }
         "400": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/address/{address}/used:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: address, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [bitcoin]
+      operationId: btcAddressUsed
+      description: Address activity including coinbase and spent outputs, for recovery discovery. Provider errors fail closed.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Address activity
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [used]
+                properties:
+                  used: { type: boolean }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
   /v1/btc/{network}/address/{address}/history:
     parameters:
       - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
@@ -403,6 +425,28 @@ paths:
               schema: { $ref: "#/components/schemas/BtcTransaction" }
         "400": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
+  /v1/btc/{network}/tx/{hash}/raw:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+      - { name: hash, in: path, required: true, schema: { type: string, pattern: "^[0-9a-fA-F]{64}$" } }
+    get:
+      tags: [bitcoin]
+      operationId: btcRawTransaction
+      description: Raw previous transaction for client-side transaction-id, amount, and script verification. Does not prove confirmation or unspentness.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Previous transaction bytes
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [raw]
+                properties:
+                  raw: { type: string, pattern: "^([0-9a-fA-F]{2})+$" }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
   /v1/btc/{network}/broadcast:
     parameters:
       - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
@@ -584,6 +628,59 @@ paths:
   /readyz:
     get: { tags: [public], operationId: readyz, responses: { "200": { description: Ready }, "503": { description: Not ready } } }
 
+  /v1/btc/{network}/identity:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [mainnet, testnet4] } }
+    get:
+      tags: [bitcoin]
+      operationId: btcIdentity
+      description: Checks the configured upstream genesis against the requested Bitcoin network. This is an upstream identity check, not independent consensus verification.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: Matching genesis, content: { application/json: { schema: { type: object, required: [genesis], properties: { genesis: { type: string } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/bitcoin/{accountId}:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets, bitcoin]
+      operationId: bitcoinSharedMessages
+      description: Public signing messages for the active device-bound member and current key generation. No secret shares are returned.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: session, in: query, schema: { type: string, default: enrollment }, description: Enrollment room, recent proposals, or a proposal UUID. }
+      responses:
+        "200": { description: Public relay messages, content: { application/json: { schema: { type: object, required: [messages], properties: { messages: { type: array, items: { type: object, additionalProperties: true } } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [shared-wallets, bitcoin]
+      operationId: postBitcoinShared
+      description: Stores an immutable registered-device-signed public message. The relay does not verify Raccoon or sign or broadcast Bitcoin payments.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [keygenId, membershipVersion, kind, session, payload, signature]
+              properties:
+                keygenId: { type: string, format: uuid }
+                membershipVersion: { type: integer }
+                kind: { type: string, enum: [enrollment, policy, proposal, approve, r1, r2, r3, partial, final] }
+                session: { type: string }
+                payload: { type: string, maxLength: 1400000, description: Base64url UTF-8 JSON containing public data only. }
+                signature: { type: string, description: Base64url P-256 P1363 device signature over the scoped relay commitment. }
+      responses:
+        "200": { description: Stored public message, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
   /v1/shared-wallets:
     get:
       tags: [shared-wallets]
@@ -1385,8 +1482,8 @@ components:
         baseFeeWei: { type: string }
         gasPriceWei: { type: string }
         feeCapWei: { type: string }
-          requiredRelayerWei: { type: string, description: "gasUnits × fee cap plus additional fee reserve: what the gas service account must hold" }
-          estimatedFeeWei: { type: string, description: "gasUnits × current gas price plus additional fee reserve" }
+        requiredRelayerWei: { type: string, description: "gasUnits × fee cap plus additional fee reserve: what the gas service account must hold" }
+        estimatedFeeWei: { type: string, description: "gasUnits × current gas price plus additional fee reserve" }
         additionalFeeReserveWei: { type: string, description: "L1 data and operator fee reserve, included in requiredRelayerWei and estimatedFeeWei" }
         relayerShortfallWei: { type: string }
         accountShortfallWei: { type: string }

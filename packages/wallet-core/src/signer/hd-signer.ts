@@ -62,7 +62,7 @@ export class HDSigner implements Signer {
     if (this.keyring.locked) throw new SignerError('LOCKED', 'Wallet is locked');
     this.confirmations.consume(confirmation, payload);
 
-    if (payload.kind === 'btc-psbt') {
+    if (payload.kind === 'btc-psbt' || payload.kind === 'bitcoin-shared') {
       // Bitcoin PSBT signing lives in `@qd/bitcoin`, which owns sighashes and
       // serialization; wallet-core only exposes the derived key.
       throw new SignerError('UNSUPPORTED', 'Bitcoin PSBTs are signed by the Bitcoin signer');

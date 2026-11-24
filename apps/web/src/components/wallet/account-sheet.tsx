@@ -7,6 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAdapter, useBitcoinAddressForAccount } from '@/lib/hooks';
 import { toast, useMeta, type AccountMeta } from '@/lib/store';
 import { addNextAccount } from '@/lib/accounts';
+import { getBitcoinAdapter } from '@/lib/chains';
 import { syncWithBackend } from '@/lib/sync';
 import { useQuery } from '@tanstack/react-query';
 import { Button } from '../ui/button';
@@ -80,7 +81,9 @@ function AccountRow({ account, active, onSelect }: { account: AccountMeta; activ
   const bal = useQuery({
     queryKey: ['native', network.id, address],
     enabled: !!address,
-    queryFn: () => adapter.getBalance(address!),
+    queryFn: () => network.family === 'bitcoin'
+      ? getBitcoinAdapter(network.id, useMeta.getState().btcAddressType, account.index).getBalance(address!)
+      : adapter.getBalance(address!),
     staleTime: 15_000,
   });
 

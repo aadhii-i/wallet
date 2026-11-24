@@ -24,6 +24,24 @@ export function openKv(dbName: string, store = 'kv') {
   };
 
   return {
+    /** Read-modify-write in one transaction, serialized across tabs/workers. */
+    update: async <T>(key: string, change: (value: T | undefined) => T): Promise<T> => {
+      const d = await db();
+      return new Promise<T>((resolve, reject) => {
+        const t = d.transaction(store, 'readwrite');
+        const s = t.objectStore(store);
+        let result: T;
+        let failure: unknown;
+        const read = s.get(key);
+        read.onsuccess = () => {
+          try { result = change(read.result as T | undefined); s.put(result, key); }
+          catch (error) { failure = error; t.abort(); }
+        };
+        t.oncomplete = () => resolve(result!);
+        t.onerror = () => reject(failure ?? t.error);
+        t.onabort = () => reject(failure ?? t.error ?? new Error('Storage transaction aborted'));
+      });
+    },
     get: <T>(key: string) => tx<T | undefined>('readonly', (s) => s.get(key) as IDBRequest<T | undefined>),
     set: (key: string, value: unknown) => tx('readwrite', (s) => s.put(value, key)),
     del: (key: string) => tx('readwrite', (s) => s.delete(key)),

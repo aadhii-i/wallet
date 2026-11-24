@@ -1,4 +1,5 @@
 import type { ActivityItem } from '@qd/shared-types';
+import type { BitcoinReview } from '@qd/wallet-core';
 import type { BitcoinAddressType, BitcoinChain, Page, TxLookup } from '@qd/blockchain';
 
 /** A spendable output, as reported by the Esplora blockchain index. */
@@ -10,6 +11,18 @@ export interface BtcUtxo {
   scriptPubKey: string;
   confirmations: number;
   blockHeight?: number;
+  /** Raw previous transaction, verified against txid and the referenced output. */
+  previousTx?: string;
+  coinbase?: boolean;
+  /** Set by local discovery, never accepted as an arbitrary signing path. */
+  address?: string;
+  changeIndex?: number;
+}
+
+export interface BitcoinWalletScope {
+  discover(): Promise<{ addresses: { address: string; changeIndex?: number }[]; highestUsed: number }>;
+  change(): Promise<{ address: string; index: number }>;
+  unavailable(): Promise<Set<string>>;
 }
 
 /** Fee estimates from `estimatesmartfee`, in sat/vB. */
@@ -30,9 +43,12 @@ export interface BitcoinDataSource {
   readonly chain: BitcoinChain;
   getTipHeight(): Promise<bigint>;
   getUtxos(address: string): Promise<BtcUtxo[]>;
+  getRawTransaction?(txid: string): Promise<string>;
+  isAddressUsed?(address: string): Promise<boolean>;
   getFees(): Promise<BtcFeeEstimates>;
   getTransaction(hash: string): Promise<TxLookup | null>;
   getHistory(address: string, cursor?: string): Promise<Page<ActivityItem>>;
+  getWalletHistory?(addresses: readonly string[], cursor?: string): Promise<Page<ActivityItem>>;
   broadcast(rawHex: string): Promise<string>;
 }
 
@@ -63,4 +79,5 @@ export interface BitcoinUnsignedTx {
   tapInternalKey?: string;
   inputs: readonly BtcUtxo[];
   changeAddress: string;
+  review: BitcoinReview;
 }

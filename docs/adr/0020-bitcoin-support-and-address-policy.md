@@ -5,6 +5,10 @@
 - **Spec:** chain family extension (11.2), key derivation (10.1), vault (ADR-0004).
 - **Related:** [ADR-0014](0014-qd-wallet-protocol-threshold-raccoon-with-stateless-derivation.md), [Bitcoin support change record](../changes/2026-11-13-bitcoin-support.md)
 
+The change-address reuse policy below is superseded by
+[ADR 0021](0021-bitcoin-change-recovery-and-utxo-validation.md). Other decisions
+remain in force.
+
 ## Context
 
 The wallet currently supports EVM chains only. Adding Bitcoin means a second
@@ -78,3 +82,7 @@ the wallet does **now** and what it deliberately does not claim.
   spending keys; only public descriptors are imported.
 - **Wait for P2MR.** Rejected for now: BIP 360 is a Draft with no activation
   date, and users need Bitcoin today. P2MR remains the planned migration path.
+
+Shared Bitcoin P2WSH custody is a separate research path described in
+[ADR 0022](0022-shared-bitcoin-native-multisig-and-raccoon.md); the personal
+receive-address policy remains unchanged.
