@@ -3,6 +3,7 @@ package hedera
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/qdwallet/wallet-api/internal/platform/httpx"
@@ -78,5 +79,13 @@ func (h *Handlers) GetHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.Query().Get("exact") == "true" {
+		items := []map[string]any{}
+		for _, item := range page.Items {
+			items = append(items, map[string]any{"transactionId": item.TransactionID, "timestamp": item.Timestamp, "type": item.Type, "direction": item.Direction, "from": item.From, "to": item.To, "amountTinybars": strconv.FormatInt(item.AmountTinybars, 10), "hbar": item.HbarDisplay, "feeTinybars": strconv.FormatInt(item.FeeTinybars, 10), "status": item.Status, "networkId": item.NetworkID})
+		}
+		httpx.WriteJSON(w, 200, map[string]any{"items": items, "nextCursor": page.NextCursor})
+		return
+	}
 	httpx.WriteJSON(w, http.StatusOK, page)
 }

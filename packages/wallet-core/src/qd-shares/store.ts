@@ -26,6 +26,11 @@ interface Sealed {
   ct: string;
 }
 
+/** Portable, authenticated Hedera recovery data. UI receives ciphertext only. */
+export interface PolicyBackup {
+ v:1;policyId:string;kdf:{alg:'argon2id';m:number;t:number;p:number;salt:string};sealed:Sealed;
+}
+
 /** Non-secret metadata, authenticated as AAD. */
 export type ShareInfo = ShareContext & { storedAt: string };
 export interface RecipientKeyInfo {
@@ -94,7 +99,11 @@ export class QdShareStore {
       throw new ShareProvisioningError('STORE_CORRUPT', 'Share store parameters are invalid');
     }
     return argon2idAsync(utf8ToBytes(password.normalize('NFKC')), fromBase64Url(kdf.salt), {
-      m: kdf.m, t: kdf.t, p: kdf.p, dkLen: 32, maxmem: 2 ** 31,
+      m: kdf.m,
+      t: kdf.t,
+      p: kdf.p,
+      dkLen: 32,
+      maxmem: 2 ** 31,
     });
   }
 
@@ -106,7 +115,10 @@ export class QdShareStore {
     const params = this.opts.kdf ?? DEFAULT_KDF;
     const kdf = { alg: 'argon2id' as const, ...params, salt: toBase64Url(randomBytes(16)) };
     const key = await this.derive(password, kdf);
-    return { key, value: { v: 1, kdf, check: seal(key, CHECK, aad('check', '', null)), shares: {}, recipientKeys: {} } };
+    return {
+      key,
+      value: { v: 1, kdf, check: seal(key, CHECK, aad('check', '', null)), shares: {}, recipientKeys: {} },
+    };
   }
 
   /**
@@ -191,16 +203,100 @@ export class QdShareStore {
 
   /** Retain this device's own Bitcoin policy share across later EVM rekeying. */
   async archiveBitcoinShare(policyId: string, walletId: string): Promise<void> {
-    if (!/^[0-9a-f]{64}$/.test(policyId)) throw new ShareProvisioningError('BAD_CONTEXT','Invalid Bitcoin policy');
-    await this.mutate((v,key) => {
-      const id=`bitcoin:${policyId}`;
+    if (!/^[0-9a-f]{64}$/.test(policyId)) throw new ShareProvisioningError('BAD_CONTEXT', 'Invalid Bitcoin policy');
+    await this.mutate((v, key) => {
+      const id = `bitcoin:${policyId}`;
       if (v.shares[id]) return;
-      const source=v.shares[walletId];
-      if (!source) throw new ShareProvisioningError('NOT_FOUND','No local key share');
-      const bytes=open(key,source.sealed,aad('share',walletId,source.info));
-      try {v.shares[id]={info:source.info,sealed:seal(key,bytes,aad('share',id,source.info))};}
-      finally {wipe(bytes);}
+      const source = v.shares[walletId];
+      if (!source) throw new ShareProvisioningError('NOT_FOUND', 'No local key share');
+      const bytes = open(key, source.sealed, aad('share', walletId, source.info));
+      try {
+        v.shares[id] = { info: source.info, sealed: seal(key, bytes, aad('share', id, source.info)) };
+      } finally {
+        wipe(bytes);
+      }
     });
+  }
+
+  async archiveHederaShare(policyId: string, walletId: string): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(policyId)) throw new ShareProvisioningError('BAD_CONTEXT', 'Invalid native policy');
+    await this.mutate((value, key) => {
+      const slot = `hedera:${policyId}`;
+      if (value.shares[slot]) return;
+      const source = value.shares[walletId];
+      if (!source) throw new ShareProvisioningError('NOT_FOUND', 'No local key share');
+      const bytes = open(key, source.sealed, aad('share', walletId, source.info));
+      try {
+        value.shares[slot] = { info: source.info, sealed: seal(key, bytes, aad('share', slot, source.info)) };
+      } finally {
+        wipe(bytes);
+      }
+    });
+  }
+
+  async putHederaArchive(policyId: string, info: ShareInfo, bytes: Uint8Array): Promise<void> {
+    return this.putPolicyArchive('hedera', policyId, info, bytes);
+  }
+
+  async putBitcoinArchive(policyId: string, info: ShareInfo, bytes: Uint8Array): Promise<void> {
+    return this.putPolicyArchive('bitcoin', policyId, info, bytes);
+  }
+
+  private async putPolicyArchive(chain: 'bitcoin' | 'hedera', policyId: string, info: ShareInfo, bytes: Uint8Array): Promise<void> {
+    if (!/^[0-9a-f]{64}$/.test(policyId)) throw new ShareProvisioningError('BAD_CONTEXT', 'Invalid native policy');
+    await this.mutate((value, key) => {
+      const slot = `${chain}:${policyId}`;
+      value.shares[slot] = { info, sealed: seal(key, bytes, aad('share', slot, info)) };
+    });
+  }
+
+  async sealHederaBackup(policyId: string, plaintext: Uint8Array): Promise<PolicyBackup> {
+    return this.sealPolicyBackup('hedera', policyId, plaintext);
+  }
+
+  async sealBitcoinBackup(policyId: string, plaintext: Uint8Array): Promise<PolicyBackup> {
+    return this.sealPolicyBackup('bitcoin', policyId, plaintext);
+  }
+
+  private async sealPolicyBackup(chain: 'bitcoin' | 'hedera', policyId: string, plaintext: Uint8Array): Promise<PolicyBackup> {
+    if (!/^[0-9a-f]{64}$/.test(policyId) || plaintext.length > 16000000)
+      throw new ShareProvisioningError('BAD_CONTEXT', 'Invalid recovery data');
+    const value = await this.load();
+    if (!value) throw new ShareProvisioningError('STORE_LOCKED', 'Share store is locked');
+    return {
+      v: 1,
+      policyId,
+      kdf: value.kdf,
+      sealed: seal(this.requireKey(), plaintext, aad(`${chain}-backup`, policyId, null)),
+    };
+  }
+
+  async openHederaBackup(backup: PolicyBackup, password: string): Promise<Uint8Array> {
+    return this.openPolicyBackup('hedera', backup, password);
+  }
+
+  async openBitcoinBackup(backup: PolicyBackup, password: string): Promise<Uint8Array> {
+    return this.openPolicyBackup('bitcoin', backup, password);
+  }
+
+  private async openPolicyBackup(chain: 'bitcoin' | 'hedera', backup: PolicyBackup, password: string): Promise<Uint8Array> {
+    if (
+      backup?.v !== 1 ||
+      !backup.kdf ||
+      backup.kdf.alg !== 'argon2id' ||
+      !/^[-_A-Za-z0-9]{22}$/.test(backup.kdf.salt) ||
+      !['m', 't', 'p'].every((field) => Number.isSafeInteger(backup.kdf[field as 'm' | 't' | 'p'])) ||
+      !/^[0-9a-f]{64}$/.test(backup.policyId) ||
+      typeof backup.sealed?.ct !== 'string' ||
+      backup.sealed.ct.length > 24000000
+    )
+      throw new ShareProvisioningError('STORE_CORRUPT', 'Invalid recovery file');
+    const key = await this.derive(password, backup.kdf);
+    try {
+      return open(key, backup.sealed, aad(`${chain}-backup`, backup.policyId, null));
+    } finally {
+      wipe(key);
+    }
   }
 
   async shareInfo(walletId: string): Promise<ShareInfo | undefined> {

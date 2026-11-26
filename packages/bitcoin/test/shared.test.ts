@@ -19,9 +19,11 @@ import {
 } from '@qd/qd-crypto';
 import {
   bitcoinPolicyId,
+  makeSharedBitcoinMigration,
   bitcoinWireBytes,
   bitcoinWireText,
   combineBitcoinApproval,
+  bitcoinSigningSid,
   createBitcoinPolicy,
   finalizeSharedBitcoin,
   makeSharedBitcoinProposal,
@@ -89,8 +91,9 @@ function proposal() {
 }
 function approve(p: SharedBitcoinProposal): BitcoinApproval {
   const parties = shares.slice(0, 2).map((key) => new QdParty(key));
+  const consents = p.active.map((from) => ({ from, nonce: bytesToHex(crypto.getRandomValues(new Uint8Array(32))) }));
   const request = {
-    sid: fromHex(p.sid),
+    sid: bitcoinSigningSid(policy, p, consents),
     act: p.active,
     derivationIndex: policy.derivationIndex,
     msg: sharedBitcoinMessage(policy, p),
@@ -109,7 +112,7 @@ function approve(p: SharedBitcoinProposal): BitcoinApproval {
     from: party.index,
     payload: bitcoinWireText(encodeRound3(party.round3(request.sid, second))),
   }));
-  return combineBitcoinApproval(policy, p, r1, r2, r3);
+  return combineBitcoinApproval(policy, p, r1, r2, r3, Date.now(), consents);
 }
 function approved() {
   for (let attempt = 0; attempt < 16; attempt++) {
@@ -315,6 +318,33 @@ describe('Bitcoin-enforced quorum plus Threshold Raccoon approval', () => {
               previousTx: signed!.raw,
             };
           }
+          // Consensus acceptance of a membership sweep to an independent group.
+          // The fixture is public policy metadata only; its private keys are not needed.
+          const policies = JSON.parse(
+            await readFile(new URL('../../../docs/api/native-policy-fixture.json', import.meta.url), 'utf8'),
+          );
+          const target = policies[2].policy as BitcoinSharedPolicy;
+          let migrated: ReturnType<typeof finalizeSharedBitcoin> | undefined;
+          for (let attempt = 0; attempt < 16; attempt++) {
+            const p = makeSharedBitcoinMigration(policy, target, crypto.randomUUID(), [coin], 2, [1, 2]);
+            let approval: BitcoinApproval;
+            try {
+              approval = approve(p);
+            } catch (error) {
+              if (attempt === 15) throw error;
+              continue;
+            }
+            migrated = finalizeSharedBitcoin(policy, p, approval, [partial(p, approval, 0), partial(p, approval, 1)]);
+            break;
+          }
+          expect(migrated).toBeDefined();
+          expect((await rpc<{ allowed: boolean }[]>('testmempoolaccept', [[migrated!.raw]]))[0]).toMatchObject({
+            allowed: true,
+          });
+          expect(Transaction.fromRaw(fromHex(migrated!.raw)).outputsLength).toBe(1);
+          expect(bytesToHex(Transaction.fromRaw(fromHex(migrated!.raw)).getOutput(0).script!)).toBe(
+            bytesToHex(sharedBitcoinOutput(target, 0, 0).script),
+          );
         } finally {
           coin = originalCoin;
         }

@@ -40,7 +40,8 @@ var (
 
 // MirrorBalance is the balance sub-object returned by the Mirror Node.
 type MirrorBalance struct {
-	Balance int64 `json:"balance"`
+	Balance   int64  `json:"balance"`
+	Timestamp string `json:"timestamp"`
 }
 
 // MirrorKey is the key sub-object returned by the Mirror Node.
@@ -52,9 +53,11 @@ type MirrorKey struct {
 
 // MirrorAccount is the account object returned by GET /accounts/{accountId}.
 type MirrorAccount struct {
-	Account string        `json:"account"`
-	Balance MirrorBalance `json:"balance"`
-	Key     MirrorKey     `json:"key"`
+	Account                   string        `json:"account"`
+	Balance                   MirrorBalance `json:"balance"`
+	Key                       MirrorKey     `json:"key"`
+	Deleted                   *bool         `json:"deleted"`
+	ReceiverSignatureRequired *bool         `json:"receiver_sig_required"`
 }
 
 // MirrorLinks holds the pagination links returned by the Mirror Node. Next is
@@ -80,6 +83,8 @@ type MirrorTransaction struct {
 	Result             string           `json:"result"`
 	Charged_tx_fee     int64            `json:"charged_tx_fee"`
 	Transfers          []MirrorTransfer `json:"transfers"`
+	MemoBase64         string           `json:"memo_base64"`
+	EntityID           string           `json:"entity_id"`
 }
 
 // MirrorTransactionPage is the page returned by GET /transactions.

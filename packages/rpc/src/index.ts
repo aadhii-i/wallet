@@ -4,3 +4,5 @@ export * from './device-key';
 export * from './shared-wallets';
 export * from './shared-keygen';
 export * from './shared-signing';
+
+export * from './native-migrations';

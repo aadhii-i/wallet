@@ -11,6 +11,7 @@ import {
   sharedBitcoinOutput,
   type BitcoinEnrollment,
   type BitcoinRound,
+  type BitcoinConsent,
   type SharedBitcoinProposal,
   type BitcoinSharedPolicy,
 } from '@qd/bitcoin';
@@ -22,8 +23,15 @@ import { createBitcoinDataSource } from '@/lib/bitcoin-api';
 import { discoverSharedBitcoin, hydrateSharedBitcoinCoins, recheckSharedBitcoinProposal } from '@/lib/bitcoin-shared';
 import { Button } from '@/components/ui/button';
 import { CopyButton } from '@/components/ui/identity';
+import { BitcoinRecovery } from './bitcoin-recovery';
 
-type RelayMessage = { id: string; from: string; kind: string; session: string; payload: string };
+type RelayMessage = {
+  id: string;
+  from: string;
+  kind: string;
+  session: string;
+  payload: string;
+};
 function content<T>(message: RelayMessage): T {
   return JSON.parse(new TextDecoder().decode(fromB64url(message.payload))) as T;
 }
@@ -38,7 +46,7 @@ async function readMessages(walletId: string, accountId: string, session = 'enro
       enrollment: ['participantId', 'xpub', 'proof', 'raccoonPublicKey'],
       policy: ['policyId'],
       proposal: ['id', 'policyId', 'recipient', 'amount', 'psbt'],
-      approve: ['message'],
+      approve: ['message', 'nonce'],
       r1: ['payload'],
       r2: ['payload'],
       r3: ['payload'],
@@ -55,7 +63,15 @@ async function readMessages(walletId: string, accountId: string, session = 'enro
 const messageOf = (policy: BitcoinSharedPolicy, proposal: SharedBitcoinProposal) =>
   bytesToHex(sharedBitcoinMessage(policy, proposal));
 
-export function BitcoinShared({ wallet }: { wallet: SharedWallet }) {
+export function BitcoinShared({
+  wallet,
+  spendingPaused = false,
+  view = 'all',
+}: {
+  wallet: SharedWallet;
+  spendingPaused?: boolean;
+  view?: 'all' | 'wallet' | 'payments' | 'activity';
+}) {
   const [accountId, setAccountId] = useState(wallet.accounts[0]?.id ?? '');
   const [session, setSession] = useState('');
   const [error, setError] = useState('');
@@ -148,6 +164,15 @@ export function BitcoinShared({ wallet }: { wallet: SharedWallet }) {
   };
   const [recipient, setRecipient] = useState(''),
     [amount, setAmount] = useState('');
+  const [selected, setSelected] = useState<number[]>();
+  useEffect(() => {
+    setSelected(undefined);
+    setSession('');
+  }, [accountId, policyId]);
+  useEffect(() => {
+    setSelected(undefined);
+    setSession('');
+  }, [accountId, policyId]);
   return (
     <section
       id="sw-bitcoin"
@@ -155,18 +180,30 @@ export function BitcoinShared({ wallet }: { wallet: SharedWallet }) {
       aria-label="Shared Bitcoin"
     >
       <h2 className="mb-2 text-lg font-semibold">Shared Bitcoin</h2>
-      <p className="mb-3 text-sm text-muted">
-        Testnet4 research preview. Bitcoin requires several native signatures; each signer also verifies Threshold
-        Raccoon approval. Native Bitcoin signatures are not quantum-safe.
-      </p>
+      {spendingPaused && (
+        <p role="status" className="mb-2 text-sm">
+          Payments are paused while your group changes.{' '}
+          <a href="#sw-setup" className="font-medium text-primary underline">
+            Open wallet migration
+          </a>{' '}
+          to continue.
+        </p>
+      )}
+      <p className="mb-3 text-sm text-muted">Bitcoin Testnet4 · Use test BTC on this network.</p>
       {!ready ? (
         <p className="text-sm text-muted">
           Create a shared account and finish key provisioning first. Use at least three participants for the current
-          Raccoon setup.
+          Raccoon setup.{' '}
+          <a href="#sw-setup" className="font-medium text-primary underline">
+            Open wallet setup
+          </a>
         </p>
       ) : (
         <>
-          <label className="mb-3 block text-sm">
+          <label
+            hidden={wallet.accounts.length < 2}
+            className={wallet.accounts.length < 2 ? 'hidden' : 'mb-3 block text-sm'}
+          >
             Account
             <select
               className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
@@ -184,189 +221,252 @@ export function BitcoinShared({ wallet }: { wallet: SharedWallet }) {
               ))}
             </select>
           </label>
-          <label className="mb-2 block text-sm">
-            Unlock key shares
-            <input
-              type="password"
-              autoComplete="current-password"
-              className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </label>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={busy || !password}
-            onClick={() =>
-              void run(async () => {
-                const pw = password;
-                setPassword('');
-                await vault.call('qdShareUnlock', { password: pw });
-              })
-            }
-          >
-            Unlock shares
-          </Button>
-          {!enrollment.data?.some((m) => m.kind === 'enrollment' && m.from === wallet.me.id) && (
+          <details open={!fullyPinned} className="my-3 rounded-xl border border-line p-3">
+            <summary className="cursor-pointer text-sm font-medium">Unlock & Bitcoin setup</summary>
+            <p className="my-2 text-xs text-muted">
+              Each signer checks Raccoon approval and provides a native Bitcoin signature. Native Bitcoin signatures are
+              not quantum-safe.
+            </p>
+            <label className="mb-2 block text-sm">
+              Unlock key shares
+              <input
+                type="password"
+                autoComplete="current-password"
+                className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </label>
             <Button
-              className="ml-2"
               size="sm"
-              disabled={busy}
+              variant="secondary"
+              disabled={busy || !password}
               onClick={() =>
                 void run(async () => {
-                  const entry = await vault.call('btcSharedEnroll', {
-                    context: {
-                      walletId: wallet.id,
-                      accountId,
-                      keygenId: keygenId!,
-                      membershipVersion: wallet.policy.membershipVersion,
-                      network: 'testnet4',
-                    },
-                    participantId: wallet.me.id,
-                    derivationIndex: account!.derivationIndex,
-                  });
-                  await post('enrollment', 'enrollment', entry);
+                  const pw = password;
+                  setPassword('');
+                  await vault.call('qdShareUnlock', { password: pw });
                 })
               }
             >
-              Register my Bitcoin key
+              Unlock shares
             </Button>
-          )}
-          <p className="mt-2 text-sm text-muted">
-            Native keys registered: {enrollment.data?.filter((m) => m.kind === 'enrollment').length ?? 0} /{' '}
-            {wallet.policy.activeParticipants}
-          </p>
-          {policy && (
-            <>
-              <p className="mt-3 text-sm">
-                Bitcoin quorum: {policy.nativeThreshold} of {policy.members.length}. Raccoon quorum:{' '}
-                {policy.raccoonThreshold} of {policy.members.length}.
-              </p>
-              <p className="mt-2 text-xs font-semibold">Policy safety number</p>
-              <p className="break-all font-mono text-xs">{policyId}</p>
-              {!ownPinned && (
-                <>
-                  <label className="my-2 flex gap-2 text-sm">
-                    <input type="checkbox" checked={compared} onChange={(e) => setCompared(e.target.checked)} />I
-                    compared this safety number with every participant.
-                  </label>
-                  <Button
-                    size="sm"
-                    disabled={!compared || busy}
-                    onClick={() =>
-                      void run(async () => {
-                        const confirmation = await vault.call('issueConfirmation', {
-                          payload: { kind: 'bitcoin-shared', policyId, message: policyId },
-                        });
-                        await vault.call('btcSharedPin', { policy, confirmation });
-                        await post('policy', 'enrollment', { policyId });
-                      })
-                    }
-                  >
-                    Confirm Bitcoin policy
-                  </Button>
-                </>
-              )}
-              <p className="mt-2 text-sm text-muted">
-                Policy confirmations: {confirmations} / {policy.members.length}
-              </p>
-              {fullyPinned && (
-                <>
-                  <p className="my-2 text-sm text-muted">
-                    Keep participant membership unchanged while testing. This preview has no recovery screen for older
-                    policies after a membership change. Keep each device’s encrypted share storage: the recovery phrase
-                    alone cannot recreate Raccoon shares.
-                  </p>
-                  <div className="my-3 rounded-xl bg-sunken p-3">
-                    <p className="text-sm font-semibold">Separate shared Bitcoin receive address</p>
-                    <p aria-label="Shared Bitcoin receive address" className="break-all font-mono text-xs">
-                      {sharedBitcoinOutput(policy, 0, 0).address}
-                    </p>
-                    <CopyButton value={sharedBitcoinOutput(policy, 0, 0).address} />
-                  </div>
-                  <p className="text-sm">
-                    Available confirmed BTC: {funds.data ? formatUnits(funds.data.available, 8) : 'Checking…'}
-                  </p>
-                  {funds.isError && (
-                    <p role="status" className="text-sm text-danger">
-                      Bitcoin discovery is unavailable. Funds are not reported as zero.
-                    </p>
-                  )}
-                  <form
-                    className="my-3 space-y-2"
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      void run(async () => {
-                        const discovery = await discoverSharedBitcoin(policy),
-                          coins = await hydrateSharedBitcoinCoins(discovery.coins);
-                        const rate = (await createBitcoinDataSource('testnet4').getFees()).market;
-                        const proposal = makeSharedBitcoinProposal(
-                          policy,
-                          coins,
-                          recipient.trim(),
-                          parseUnits(amount, 8),
-                          rate,
-                          discovery.next,
-                          policy.members.slice(0, policy.raccoonThreshold).map((m) => m.partyIndex),
-                        );
-                        await post('proposal', proposal.id, proposal);
-                        setSession(proposal.id);
-                      });
-                    }}
-                  >
-                    <label className="block text-sm">
-                      Bitcoin recipient
-                      <input
-                        className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
-                        value={recipient}
-                        onChange={(e) => setRecipient(e.target.value)}
-                      />
+            {!enrollment.data?.some((m) => m.kind === 'enrollment' && m.from === wallet.me.id) && (
+              <Button
+                className="ml-2"
+                size="sm"
+                disabled={busy}
+                onClick={() =>
+                  void run(async () => {
+                    const entry = await vault.call('btcSharedEnroll', {
+                      context: {
+                        walletId: wallet.id,
+                        accountId,
+                        keygenId: keygenId!,
+                        membershipVersion: wallet.policy.membershipVersion,
+                        network: 'testnet4',
+                      },
+                      participantId: wallet.me.id,
+                      derivationIndex: account!.derivationIndex,
+                    });
+                    await post('enrollment', 'enrollment', entry);
+                  })
+                }
+              >
+                Register my Bitcoin key
+              </Button>
+            )}
+            <p className="mt-2 text-sm text-muted">
+              Native keys registered: {enrollment.data?.filter((m) => m.kind === 'enrollment').length ?? 0} /{' '}
+              {wallet.policy.activeParticipants}
+            </p>
+            {policy && (
+              <>
+                <p className="mt-3 text-sm">
+                  Bitcoin quorum: {policy.nativeThreshold} of {policy.members.length}. Raccoon quorum:{' '}
+                  {policy.raccoonThreshold} of {policy.members.length}.
+                </p>
+                <p className="mt-2 text-xs font-semibold">Policy safety number</p>
+                <p className="break-all font-mono text-xs">{policyId}</p>
+                {!ownPinned && (
+                  <>
+                    <label className="my-2 flex gap-2 text-sm">
+                      <input type="checkbox" checked={compared} onChange={(e) => setCompared(e.target.checked)} />I
+                      compared this safety number with every participant.
                     </label>
-                    <label className="block text-sm">
-                      Amount in BTC
-                      <input
-                        inputMode="decimal"
-                        className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                      />
-                    </label>
-                    <Button type="submit" size="sm" disabled={busy || !recipient || !amount || !funds.data}>
-                      Prepare Bitcoin proposal
-                    </Button>
-                  </form>
-                  <label className="my-3 block text-sm">
-                    Bitcoin proposal
-                    <select
-                      className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
-                      value={session}
-                      onChange={(e) => setSession(e.target.value)}
+                    <Button
+                      size="sm"
+                      disabled={!compared || busy}
+                      onClick={() =>
+                        void run(async () => {
+                          const confirmation = await vault.call('issueConfirmation', {
+                            payload: {
+                              kind: 'bitcoin-shared',
+                              policyId,
+                              message: policyId,
+                            },
+                          });
+                          await vault.call('btcSharedPin', {
+                            policy,
+                            confirmation,
+                          });
+                          await post('policy', 'enrollment', { policyId });
+                          await qc.invalidateQueries({
+                            queryKey: ['shared-wallet', wallet.id],
+                          });
+                        })
+                      }
                     >
-                      <option value="">Select a proposal</option>
-                      {recent.data
-                        ?.filter((m) => m.kind === 'proposal')
-                        .map((m) => (
-                          <option key={m.id} value={m.session}>
-                            {m.session.slice(0, 8)} · {content<SharedBitcoinProposal>(m).amount} sats
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                  {session && (
-                    <BitcoinProposal
-                      key={`${policyId}|${session}`}
-                      wallet={wallet}
-                      policy={policy}
-                      session={session}
-                      post={post}
-                    />
-                  )}
-                </>
+                      Confirm Bitcoin policy
+                    </Button>
+                  </>
+                )}
+                <p className="mt-2 text-sm text-muted">
+                  Policy confirmations: {confirmations} / {policy.members.length}
+                </p>
+              </>
+            )}
+          </details>
+          {policy && fullyPinned && (
+            <>
+              <div hidden={view !== 'all' && view !== 'wallet'} className="my-3 rounded-xl bg-sunken p-3">
+                <p className="text-sm font-semibold">Receive Bitcoin</p>
+                <p aria-label="Shared Bitcoin receive address" className="break-all font-mono text-xs">
+                  {sharedBitcoinOutput(policy, 0, 0).address}
+                </p>
+                <CopyButton value={sharedBitcoinOutput(policy, 0, 0).address} />
+              </div>
+              <p className="text-sm">
+                Available confirmed BTC: {funds.data ? formatUnits(funds.data.available, 8) : 'Checking…'}
+              </p>
+              {funds.isError && (
+                <p role="status" className="text-sm text-danger">
+                  Bitcoin discovery is unavailable. Funds are not reported as zero.
+                </p>
               )}
+              <form
+                hidden={view === 'wallet' || view === 'activity'}
+                className="my-3 space-y-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(async () => {
+                    if (spendingPaused) throw new Error('Finish the pending membership migration first');
+                    const discovery = await discoverSharedBitcoin(policy),
+                      coins = await hydrateSharedBitcoinCoins(discovery.coins);
+                    const rate = (await createBitcoinDataSource('testnet4').getFees()).market;
+                    const proposal = makeSharedBitcoinProposal(
+                      policy,
+                      coins,
+                      recipient.trim(),
+                      parseUnits(amount, 8),
+                      rate,
+                      discovery.next,
+                      selected ?? policy.members.slice(0, policy.raccoonThreshold).map((m) => m.partyIndex),
+                    );
+                    await post('proposal', proposal.id, proposal);
+                    setSession(proposal.id);
+                  });
+                }}
+              >
+                <label className="block text-sm">
+                  Bitcoin recipient
+                  <input
+                    className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
+                    value={recipient}
+                    onChange={(e) => setRecipient(e.target.value)}
+                  />
+                </label>
+                <label className="block text-sm">
+                  Amount in BTC
+                  <input
+                    inputMode="decimal"
+                    className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                </label>
+                <fieldset className="rounded-xl border border-line p-2">
+                  <legend className="text-sm">Choose {policy.raccoonThreshold} Raccoon signers</legend>
+                  {policy.members.map((member) => (
+                    <label key={member.partyIndex} className="mr-3 inline-flex gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={(
+                          selected ?? policy.members.slice(0, policy.raccoonThreshold).map((m) => m.partyIndex)
+                        ).includes(member.partyIndex)}
+                        onChange={(e) =>
+                          setSelected((previous) => {
+                            const current =
+                              previous ?? policy.members.slice(0, policy.raccoonThreshold).map((m) => m.partyIndex);
+                            return (
+                              e.target.checked
+                                ? [...current, member.partyIndex]
+                                : current.filter((i) => i !== member.partyIndex)
+                            ).sort((a, b) => a - b);
+                          })
+                        }
+                      />
+                      Signer {member.partyIndex}
+                    </label>
+                  ))}
+                </fieldset>
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={
+                    spendingPaused ||
+                    busy ||
+                    !recipient ||
+                    !amount ||
+                    !funds.data ||
+                    (selected !== undefined && selected.length !== policy.raccoonThreshold)
+                  }
+                >
+                  Prepare Bitcoin proposal
+                </Button>
+              </form>
+              <div hidden={view === 'wallet'}>
+                <label className="my-3 block text-sm">
+                  Bitcoin proposal
+                  <select
+                    className="mt-1 block w-full rounded-xl border border-line bg-surface p-2"
+                    value={session}
+                    onChange={(e) => setSession(e.target.value)}
+                  >
+                    <option value="">Select a proposal</option>
+                    {recent.data
+                      ?.filter((m) => m.kind === 'proposal')
+                      .map((m) => (
+                        <option key={m.id} value={m.session}>
+                          {m.session.slice(0, 8)} · {content<SharedBitcoinProposal>(m).amount} sats
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                {session && !spendingPaused && (
+                  <BitcoinProposal
+                    key={`${policyId}|${session}`}
+                    wallet={wallet}
+                    policy={policy}
+                    session={session}
+                    paused={spendingPaused}
+                    post={post}
+                  />
+                )}
+              </div>
             </>
           )}
         </>
+      )}
+      {ready && (
+        <details open={view === 'activity'} className="mt-4 rounded-xl border border-line p-3">
+          <summary className="cursor-pointer text-sm font-medium">Recovery & saved payments</summary>
+          <p className="my-2 text-xs text-muted">
+            Keep each participant’s encrypted share backup. The recovery phrase alone cannot recreate Raccoon shares.
+            Changing members requires a wallet migration.
+          </p>
+          <BitcoinRecovery walletId={wallet.id} policy={policy} enabled={ownPinned} />
+        </details>
       )}
       {(enrollment.isError || recent.isError) && (
         <p role="alert" className="text-sm text-danger">
@@ -382,15 +482,21 @@ export function BitcoinShared({ wallet }: { wallet: SharedWallet }) {
   );
 }
 
-function BitcoinProposal({
+export function BitcoinProposal({
   wallet,
   policy,
   session,
   post,
+  registeredProposal,
+  loadMessages,
+  paused = false,
 }: {
   wallet: SharedWallet;
   policy: BitcoinSharedPolicy;
   session: string;
+  paused?: boolean;
+  registeredProposal?: SharedBitcoinProposal;
+  loadMessages?: () => Promise<RelayMessage[]>;
   post: (kind: string, room: string, value: unknown) => Promise<void>;
 }) {
   const qc = useQueryClient(),
@@ -409,8 +515,10 @@ function BitcoinProposal({
     queryKey: [...scope, session],
     refetchInterval: 2000,
     queryFn: async () => {
-      const data = await readMessages(wallet.id, policy.context.accountId, session);
-      for (const message of data.filter((m) => /^r[123]$/.test(m.kind))) {
+      const data = await (loadMessages ? loadMessages() : readMessages(wallet.id, policy.context.accountId, session));
+      for (const message of data.filter(
+        (m) => /^r[123]$/.test(m.kind) || m.kind === 'approve' || m.kind === 'partial',
+      )) {
         const round = content<BitcoinRound>(message),
           member = policy.members.find((m) => m.participantId === message.from);
         if (!member || round.from !== member.partyIndex) throw new Error('Raccoon message author mismatch');
@@ -419,9 +527,15 @@ function BitcoinProposal({
     },
   });
   const proposalMessage = messages.data?.find((m) => m.kind === 'proposal');
-  const proposal = proposalMessage ? content<SharedBitcoinProposal>(proposalMessage) : undefined;
+  const proposal =
+    registeredProposal ?? (proposalMessage ? content<SharedBitcoinProposal>(proposalMessage) : undefined);
   const mine = policy.members.find((m) => m.participantId === wallet.me.id);
   const approved = messages.data?.some((m) => m.kind === 'approve' && m.from === wallet.me.id);
+  const consents =
+    messages.data
+      ?.filter((m) => m.kind === 'approve')
+      .map((m) => content<BitcoinConsent & { message: string }>(m))
+      .filter((c) => proposal?.active.includes(c.from) && c.message === messageOf(policy, proposal)) ?? [];
   const rounds = (kind: string): BitcoinRound[] =>
     messages.data
       ?.filter((m) => m.kind === kind)
@@ -432,27 +546,46 @@ function BitcoinProposal({
         return round;
       }) ?? [];
   const advance = async () => {
-    if (working.current || !approved || !proposal || !mine || error || messages.isError) return;
+    if (paused || working.current || !approved || !proposal || !mine || error || messages.isError) return;
     working.current = true;
     try {
       const data = messages.data ?? [],
         own = (kind: string) => data.some((m) => m.kind === kind && m.from === wallet.me.id);
       if (proposal.active.includes(mine.partyIndex)) {
+        if (consents.length !== policy.raccoonThreshold) return;
         for (const round of [1, 2, 3] as const) {
           if (own(`r${round}`)) continue;
           const inputs = round === 1 ? [] : rounds(`r${round - 1}`);
           if (round > 1 && inputs.length !== policy.raccoonThreshold) return;
-          const output = await vault.call('btcSharedRound', { policy, proposal, round, inputs });
+          const output = await vault.call('btcSharedRound', {
+            policy,
+            proposal,
+            consents,
+            round,
+            inputs,
+          });
           await post(`r${round}`, session, output);
           await qc.invalidateQueries({ queryKey: scope });
           return;
         }
       }
       if (!own('partial') && rounds('r3').length === policy.raccoonThreshold) {
-        const approval = combineBitcoinApproval(policy, proposal, rounds('r1'), rounds('r2'), rounds('r3'));
+        const approval = combineBitcoinApproval(
+          policy,
+          proposal,
+          rounds('r1'),
+          rounds('r2'),
+          rounds('r3'),
+          Date.now(),
+          consents,
+        );
         await discoverSharedBitcoin(policy);
         await recheckSharedBitcoinProposal(policy, proposal);
-        const signature = await vault.call('btcSharedNativeSign', { policy, proposal, approval });
+        const signature = await vault.call('btcSharedNativeSign', {
+          policy,
+          proposal,
+          approval,
+        });
         await post('partial', session, signature);
         await qc.invalidateQueries({ queryKey: scope });
       }
@@ -486,7 +619,9 @@ function BitcoinProposal({
     );
   return (
     <div className="rounded-xl border border-line p-3" aria-label="Bitcoin proposal review">
-      <h3 className="font-semibold">Review shared Bitcoin payment</h3>
+      <h3 className="font-semibold">
+        {proposal.migration ? 'Review Bitcoin membership migration' : 'Review shared Bitcoin payment'}
+      </h3>
       <p className="break-all text-sm">Recipient: {proposal.recipient}</p>
       <p className="text-sm">Payment: {formatUnits(BigInt(proposal.amount), 8)} BTC</p>
       <p className="text-sm">Network fee: {formatUnits(BigInt(proposal.maxFee), 8)} BTC</p>
@@ -494,11 +629,17 @@ function BitcoinProposal({
         Expires: {new Date(proposal.expiresAt).toLocaleString()}. Approval authorizes the exact payment and wallet-owned
         change.
       </p>
+      {proposal.migration && (
+        <p className="text-sm text-muted">
+          This sweep may conflict with an older signed payment. Either transaction could confirm first. Both signed
+          records remain recoverable; other and late coins still need the old quorum.
+        </p>
+      )}
       {!approved && (
         <Button
           className="mt-3"
           size="sm"
-          disabled={busy}
+          disabled={paused || busy}
           onClick={async () => {
             setBusy(true);
             setError('');
@@ -509,8 +650,12 @@ function BitcoinProposal({
               const confirmation = await vault.call('issueConfirmation', {
                 payload: { kind: 'bitcoin-shared', policyId, message },
               });
-              await vault.call('btcSharedApprove', { policy, proposal, confirmation });
-              await post('approve', session, { message });
+              const consent = await vault.call('btcSharedApprove', {
+                policy,
+                proposal,
+                confirmation,
+              });
+              await post('approve', session, consent);
               await qc.invalidateQueries({ queryKey: scope });
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Approval failed');
@@ -530,16 +675,31 @@ function BitcoinProposal({
         <Button
           className="mt-3"
           size="sm"
-          disabled={busy || (messages.data?.filter((m) => m.kind === 'partial').length ?? 0) < policy.nativeThreshold}
+          disabled={
+            paused || busy || (messages.data?.filter((m) => m.kind === 'partial').length ?? 0) < policy.nativeThreshold
+          }
           onClick={async () => {
             setBusy(true);
             setError('');
             try {
-              const approval = combineBitcoinApproval(policy, proposal, rounds('r1'), rounds('r2'), rounds('r3'));
+              const approval = combineBitcoinApproval(
+                policy,
+                proposal,
+                rounds('r1'),
+                rounds('r2'),
+                rounds('r3'),
+                Date.now(),
+                consents,
+              );
               const partials = (messages.data ?? [])
                 .filter((m) => m.kind === 'partial')
                 .map((m) => content<{ partial: string }>(m).partial);
-              const finalized = await vault.call('btcSharedFinalize', { policy, proposal, approval, partials });
+              const finalized = await vault.call('btcSharedFinalize', {
+                policy,
+                proposal,
+                approval,
+                partials,
+              });
               const source = createBitcoinDataSource('testnet4'),
                 existing = await source.getTransaction(finalized.txid);
               if (!existing) {

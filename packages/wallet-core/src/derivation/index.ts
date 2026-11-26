@@ -402,3 +402,16 @@ export function hederaPublicKeyFromNode(node: HDKey): Uint8Array {
   if (!node.publicKey) throw new Error('Public key unavailable');
   return node.publicKey;
 }
+
+/** Versioned shared-Hedera namespace; never aliases a personal or Bitcoin key. */
+export interface HederaSharedContext {
+  walletId:string;accountId:string;keygenId:string;membershipVersion:number;network:'testnet';
+}
+export function hederaSharedRootPath(context:HederaSharedContext):string {
+  if(context.network!=='testnet')throw new Error('Shared Hedera is Testnet only');
+  for(const id of [context.walletId,context.accountId,context.keygenId])if(!/^[0-9a-f-]{36}$/.test(id))throw new Error('Invalid shared Hedera identity');
+  assertIndex(context.membershipVersion);
+  const digest=sha256(utf8ToBytes(JSON.stringify(['QDWallet-HederaNative/v1',context.walletId,context.accountId,context.keygenId,context.membershipVersion,context.network])));
+  const words=new DataView(digest.buffer,digest.byteOffset,digest.byteLength);
+  return `m/48'/3030'/0'/1'/${Array.from({length:8},(_,i)=>`${words.getUint32(i*4)&MAX_ACCOUNT_INDEX}'`).join('/')}`;
+}

@@ -1,3 +1,4 @@
+import { openSharedTask, openSharedDetails } from './shared-navigation';
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 
 /**
@@ -44,7 +45,7 @@ async function createLocalWallet(page: Page) {
 
 /** In-app navigation (a full reload would lock the wallet). */
 async function openShared(page: Page) {
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Shared', exact: true }).filter({ visible: true }).first().click();
+  await page.getByRole('navigation', { name: 'Wallet type' }).getByRole('link', { name: 'Shared Wallet', exact: true }).filter({ visible: true }).first().click();
   await expect(page.getByRole('heading', { name: 'Shared wallets', level: 1 })).toBeVisible();
 }
 
@@ -70,9 +71,12 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
   await create.getByRole('button', { name: 'Create shared wallet' }).click();
   await expect(p1.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
   await expect(p1.getByText('Participants: 1', { exact: true })).toBeVisible();
+  await openSharedTask(p1, 'sw-setup');
+  await openSharedDetails(p1, 'Group details');
   await expect(p1.getByText('Authorization policy: 50%', { exact: true })).toBeVisible();
 
   // --- P1 invites four people; each code is read from the UI ---
+  await openSharedTask(p1, 'sw-participants');
   const codes: string[] = [];
   for (let i = 2; i <= 5; i++) {
     await p1.getByLabel('Invitation label').fill(`P${i}`);
@@ -97,6 +101,7 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(join.getByRole('group', { name: 'Invitation preview' })).toContainText('Invited by P1');
     await join.getByRole('button', { name: 'Accept invitation' }).click();
     await expect(page.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
+    await openSharedTask(page, 'sw-participants');
     others.push(page);
   }
   const [p2, p3, p4, p5] = others as [Page, Page, Page, Page];
@@ -107,25 +112,27 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(page.getByText('Required approvals: 3', { exact: true })).toBeVisible();
   }
   // Only the owner manages invitations.
-  await expect(p1.getByRole('heading', { name: 'Invitations' })).toBeVisible();
-  await expect(p2.getByRole('heading', { name: 'Invitations' })).toHaveCount(0);
+  await expect(p1.getByRole('heading', { name: 'Invitations', exact: true })).toBeVisible();
+  await expect(p2.getByRole('heading', { name: 'Invitations', exact: true })).toHaveCount(0);
 
+  await openSharedTask(p1, 'sw-setup');
   // --- P1 adds an account (not a participant) ---
   await p1.getByLabel('Account name').fill('Treasury');
   await p1.getByRole('button', { name: 'Add account' }).click();
   await expect(p1.getByRole('list', { name: 'Shared accounts' })).toContainText(/QD account #\d+ — address available once the wallet key is initialized/);
   await expect(p1.getByText('Participants: 5', { exact: true })).toBeVisible();
 
+  for (const page of all) await openSharedTask(page, 'sw-proposals');
   // --- P1 proposes 1 ETH on Anvil ---
-  const form = p1.getByRole('form', { name: 'New proposal' });
+  const form = p1.getByRole('form', { name: 'Payment request' });
   await expect(form.getByLabel('Sender account')).toContainText('Treasury');
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('1');
   await form.getByLabel('Network', { exact: true }).selectOption('11155111');
-  await form.getByRole('button', { name: 'Review proposal' }).click();
+  await form.getByRole('button', { name: 'Review payment' }).click();
   await expect(p1.getByText('This transaction requires approval from 3 of 5 participants.')).toBeVisible();
   await expect(p1.getByText(/requires approval from 3 of 5 participants/)).toBeVisible();
-  await p1.getByRole('button', { name: 'Submit proposal' }).click();
+  await p1.getByRole('button', { name: 'Create payment request' }).click();
 
   const card1 = proposalCard(p1);
   await expect(card1).toBeVisible();
@@ -184,6 +191,7 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
   await expect(outsider.getByRole('list', { name: 'Your shared wallets' })).toHaveCount(0);
   await expect(outsider.getByText(WALLET_NAME)).toHaveCount(0);
 
+  for (const page of all) await openSharedTask(page, 'sw-setup');
   // ===== Threshold Raccoon key generation (trusted dealer = P1's browser) =====
   for (const page of all) await expect(keyCard(page).getByText('Status: Not initialized')).toBeVisible();
   await expect(keyCard(p2).getByText('Waiting for the owner to start key generation.')).toBeVisible();
@@ -226,11 +234,13 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(card.getByText('3-of-5 Threshold Raccoon key, provisioned to every participant.')).toBeVisible();
     await expect(card.getByText(`This device holds share #${i + 1}.`)).toBeVisible();
     fingerprints.push((await card.getByText(/^Key fingerprint:/).textContent()) ?? '');
+    await openSharedDetails(page, 'Group details');
     await expect(page.getByText('Key status: Key initialized')).toBeVisible();
   }
   expect(new Set(fingerprints).size).toBe(1);
   await expect(keyCard(outsider)).toHaveCount(0);
 
+  for (const page of all) await openSharedTask(page, 'sw-proposals');
   // The approved proposal now refers to an initialized key — but no signature exists.
   for (const page of all) {
     const card = proposalCard(page);

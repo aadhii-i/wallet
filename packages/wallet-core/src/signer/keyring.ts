@@ -1,3 +1,4 @@
+import { hederaSharedRootPath, type HederaSharedContext } from '../derivation';
 import type { HDKey } from '@scure/bip32';
 import { mnemonicToSeedBytes, validateMnemonic } from '../mnemonic';
 import {
@@ -132,6 +133,17 @@ export class HDKeyring {
     } finally {
       node.wipePrivateData();
     }
+  }
+
+  hederaSharedPublicKey(context:HederaSharedContext):string {
+    const node=this.requireMaster().derive(hederaSharedRootPath(context));
+    try {if(!node.publicKey)throw new SignerError('LOCKED','Public key unavailable');return bytesToHex(node.publicKey);}
+    finally {node.wipePrivateData();}
+  }
+  withHederaSharedPrivateKey<T>(context:HederaSharedContext,fn:(key:Uint8Array)=>T):T {
+    const node=this.requireMaster().derive(hederaSharedRootPath(context));
+    try {if(!node.privateKey)throw new SignerError('LOCKED','Private key unavailable');return fn(node.privateKey);}
+    finally {node.wipePrivateData();}
   }
 
   btcSharedRoot(context: BitcoinSharedContext): string {

@@ -16,6 +16,8 @@ import (
 var (
 	// ErrStale: the caller's view of the wallet (membership version) is out of date.
 	ErrStale = errors.New("store: stale membership version")
+	// Native keys require a quorum-authorized migration, not an immediate roster edit.
+	ErrNativeMigrationRequired = errors.New("store: migrate native shared accounts before changing participants")
 	// ErrNonceInvalid: vote nonce unknown, used, expired, or bound to someone else.
 	ErrNonceInvalid = errors.New("store: invalid vote nonce")
 	// ErrProposalClosed: the proposal no longer accepts votes.
@@ -71,8 +73,9 @@ type SharedWallet struct {
 	PolicyDenominator int
 	PolicyRounding    string
 	// MembershipVersion increments on every join or revocation.
-	MembershipVersion int64
-	KeyStatus         KeyStatus
+	MembershipVersion   int64
+	NativeCustodyLocked bool
+	KeyStatus           KeyStatus
 	// KeyGenerationID and KeyFingerprint identify the completed ceremony that
 	// produced the current (or, after a membership change, the stale) key.
 	KeyGenerationID *uuid.UUID
@@ -222,6 +225,8 @@ type SharedWallets interface {
 	// CreateWallet inserts the wallet and its owner member together.
 	CreateWallet(ctx context.Context, w *SharedWallet, owner *SharedMember) error
 	GetWallet(ctx context.Context, walletID uuid.UUID) (*SharedWallet, error)
+	// LockNativeCustody serializes against joins and revocations at the expected epoch.
+	LockNativeCustody(ctx context.Context, walletID uuid.UUID, membershipVersion int64) error
 	// ListWalletsForUser returns wallets where userID is an active member.
 	ListWalletsForUser(ctx context.Context, userID uuid.UUID) ([]*SharedWallet, error)
 

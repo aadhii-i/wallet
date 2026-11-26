@@ -17,6 +17,7 @@ export interface BitcoinReview {
  * Keeping payloads byte-level keeps wallet-core free of chain libraries (spec §10.4).
  */
 export type SigningPayload =
+  | { kind: 'hedera-shared'; policyId: string; message: string }
   | { kind: 'bitcoin-shared'; policyId: string; message: string }
   | {
       kind: 'evm-transaction';

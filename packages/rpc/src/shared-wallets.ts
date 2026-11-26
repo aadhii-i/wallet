@@ -59,6 +59,8 @@ export interface SharedWallet {
   id: string;
   name: string;
   createdAt: string;
+  /** Native custody prevents immediate roster edits; use a quorum migration. */
+  nativeCustodyLocked?: boolean;
   keyStatus: 'none' | 'rekey_required' | 'active';
   /** Threshold Raccoon key state; `initialized` only after every participant acknowledged its share. */
   key: SharedWalletKey;
