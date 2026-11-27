@@ -215,6 +215,12 @@ export interface VaultOps {
   qdPrepareKeygen: { req: { walletId: string; keygenId: string; participantId: string }; res: { publicKey: string } };
   qdDeal: { req: QdDealRequest; res: QdDealResult };
   qdAcceptShare: { req: QdAcceptRequest; res: { fingerprint: string; partyIndex: number } };
+  /** This device's share, encrypted under a separate backup password: the file text (ciphertext + public context). */
+  qdExportShareBackup: { req: { walletId: string; password: string; backupPassword: string }; res: { file: string } };
+  /** This device's share as a backup file that opens with the wallet password; no prompt (made right after receiving the share). */
+  qdAutoShareBackup: { req: { walletId: string }; res: { file: string } };
+  /** Decrypts a backup file, checks it is this participant's share of the wallet's current key, stores it. */
+  qdRestoreShareBackup: { req: QdRestoreRequest; res: { fingerprint: string; partyIndex: number } };
   // Networked Threshold Raccoon signing. Results are public protocol values.
   qdAccountKey: { req: { walletId: string; derivationIndex: number }; res: QdAccountKey };
   qdSignRound: { req: QdSignRoundRequest; res: { payload: string } };
@@ -317,4 +323,11 @@ export interface QdSignRoundRequest {
   publicKeyHash: string; // 0x + 64 hex; must equal this device's own pk_j hash
   round: 1 | 2 | 3;
   inputs: string[];
+}
+
+export interface QdRestoreRequest {
+  file: string;
+  backupPassword: string;
+  /** The wallet's current key as the server reports it, and this participant's place in it. */
+  expected: { walletId: string; keygenId: string; participantId: string; partyIndex: number; fingerprint: string };
 }

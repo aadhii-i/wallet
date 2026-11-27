@@ -14,6 +14,7 @@ import { randomBytes } from '@noble/hashes/utils.js';
 import { fromBase64Url, toBase64Url, utf8ToBytes, wipe } from '../encoding';
 import { DEFAULT_KDF, MAX_KDF, MIN_KDF, type KdfOptions } from '../vault';
 import { ShareProvisioningError, type ShareContext } from './envelope';
+import { encryptShareBackupWithStoreKey, type ShareBackupFile } from './backup';
 
 export interface Kv {
   get<T>(key: string): Promise<T | undefined>;
@@ -309,6 +310,24 @@ export class QdShareStore {
     const rec = (await this.load())?.shares[walletId];
     if (!rec) throw new ShareProvisioningError('NOT_FOUND', 'No share for this wallet on this device');
     return open(key, rec.sealed, aad('share', walletId, rec.info));
+  }
+
+  /**
+   * A backup file of this device's share that opens with the wallet password
+   * (backup.ts, 'wallet-password'). The store's key never leaves this class.
+   */
+  async walletPasswordBackup(walletId: string): Promise<ShareBackupFile> {
+    const key = this.requireKey();
+    const v = await this.load();
+    const rec = v?.shares[walletId];
+    if (!v || !rec) throw new ShareProvisioningError('NOT_FOUND', 'No share for this wallet on this device');
+    const share = open(key, rec.sealed, aad('share', walletId, rec.info));
+    try {
+      const { storedAt: _storedAt, ...context } = rec.info;
+      return encryptShareBackupWithStoreKey(context, share, key, v.kdf);
+    } finally {
+      wipe(share);
+    }
   }
 
   /** Re-encrypts everything under a key from the new password, in one write. */

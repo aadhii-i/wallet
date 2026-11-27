@@ -221,11 +221,27 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
 
   // Each participant receives, verifies and stores only its own share; the key
   // stays uninitialized until the last one acknowledges.
+  // Each device also downloads a backup of its own share at once: "<wallet name> <date>.json".
+  const today = new Date();
+  const expectedName = `${WALLET_NAME} ${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}.json`;
+  const autoBackups: string[] = [];
   for (const [i, page] of all.entries()) {
     const card = keyCard(page);
     await expect(card.getByText('Status: Awaiting participant provisioning')).toBeVisible();
+    const downloading = page.waitForEvent('download');
     await card.getByRole('button', { name: 'Receive my share' }).click();
+    const download = await downloading;
+    expect(download.suggestedFilename()).toBe(expectedName);
+    const path = test.info().outputPath(`auto-backup-p${i + 1}.json`);
+    await download.saveAs(path);
+    autoBackups.push(path);
     if (i < all.length - 1) await expect(card.getByText(/Your share is stored\./)).toBeVisible();
+  }
+  const { readFile } = await import('node:fs/promises');
+  for (const [i, path] of autoBackups.entries()) {
+    const f = JSON.parse(await readFile(path, 'utf8'));
+    expect(f).toMatchObject({ format: 'qd-wallet-share-backup', v: 1, key: 'wallet-password', context: { partyIndex: i + 1, threshold: 3, parties: 5 } });
+    expect(JSON.stringify(f)).not.toContain(PASSWORD);
   }
   const fingerprints: string[] = [];
   for (const [i, page] of all.entries()) {
@@ -250,4 +266,69 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(card.getByText(/awaiting key generation/)).toHaveCount(0);
     await expect(card.getByText(/\b(Signed|Submitted|Confirmed)\b/)).toHaveCount(0);
   }
+
+  // --- P2 backs up its share, loses this browser's share storage, and restores it from the file ---
+  const backupPassword = 'Backup-Zebra-Lamp-77';
+  await openSharedTask(p2, 'sw-setup');
+  await keyCard(p2).getByRole('button', { name: 'Back up my share' }).click();
+  const backupForm = p2.getByRole('region', { name: 'Back up my share' });
+  await backupForm.getByLabel('Wallet password').fill(PASSWORD);
+  await backupForm.getByLabel('Backup password', { exact: true }).fill(PASSWORD);
+  await backupForm.getByLabel('Confirm backup password').fill(PASSWORD);
+  await backupForm.getByRole('button', { name: 'Download backup file' }).click();
+  await expect(backupForm.getByText('Use a backup password different from your wallet password.', { exact: true })).toBeVisible();
+  await backupForm.getByLabel('Backup password', { exact: true }).fill(backupPassword);
+  await backupForm.getByLabel('Confirm backup password').fill(backupPassword);
+  const downloading = p2.waitForEvent('download');
+  await backupForm.getByRole('button', { name: 'Download backup file' }).click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toBe(expectedName);
+  const backupPath = test.info().outputPath('share-backup.json');
+  await download.saveAs(backupPath);
+  const backup = JSON.parse(await readFile(backupPath, 'utf8'));
+  expect(backup).toMatchObject({ format: 'qd-wallet-share-backup', v: 1, key: 'backup-password', context: { partyIndex: 2, threshold: 3, parties: 5 } });
+  expect(JSON.stringify(backup)).not.toContain(backupPassword);
+
+  // Lose the share: close the app (stopping its key worker), delete only the share store, reopen.
+  const ctx2 = p2.context();
+  await p2.close();
+  const blank = await ctx2.newPage();
+  await blank.goto('/index.txt');
+  await blank.evaluate(
+    () => new Promise<void>((resolve, reject) => {
+      const req = indexedDB.deleteDatabase('qd-shares');
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(new Error('delete failed'));
+      req.onblocked = () => reject(new Error('delete blocked'));
+    }),
+  );
+  await blank.goto('/');
+  await blank.getByLabel('Password', { exact: true }).fill(PASSWORD);
+  await blank.getByRole('button', { name: 'Unlock' }).click();
+  await expect(blank).toHaveURL(/\/home/);
+  await openShared(blank); // one wallet: its dashboard opens directly
+  await expect(blank.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
+  await openSharedTask(blank, 'sw-setup');
+  const restoredCard = keyCard(blank);
+  await expect(restoredCard.getByText('This device does not hold a share of the current key.')).toBeVisible();
+  await restoredCard.getByLabel('Wallet password').fill(PASSWORD);
+  await restoredCard.getByRole('button', { name: 'Unlock key-share storage' }).click();
+
+  // Restore from the file downloaded automatically, with the wallet password.
+  const restore = blank.getByRole('region', { name: 'Restore my share' });
+  await restore.getByLabel('Backup file').setInputFiles(autoBackups[1]!);
+  await expect(restore.getByText('The wallet password you used when this file was made.')).toBeVisible();
+  await restore.getByLabel('Wallet password').fill(`${PASSWORD}x`);
+  await restore.getByRole('button', { name: 'Restore share' }).click();
+  await expect(restore.getByText('Wrong password, or the file was modified.')).toBeVisible();
+  await restore.getByLabel('Wallet password').fill(PASSWORD);
+  await restore.getByRole('button', { name: 'Restore share' }).click();
+  await expect(restoredCard.getByText('This device holds share #2.')).toBeVisible();
+  await expect(restoredCard.getByRole('button', { name: 'Back up my share' })).toBeVisible();
+
+  // A participant that still holds its share is not offered a restore (cross-participant files: wallet-core tests).
+  await openSharedTask(p3, 'sw-setup');
+  const p3card = keyCard(p3);
+  await expect(p3card.getByText('This device holds share #3.')).toBeVisible();
+  await expect(p3card.getByRole('region', { name: 'Restore my share' })).toHaveCount(0);
 });

@@ -7,6 +7,10 @@
 import {
   QdShareStore,
   ShareProvisioningError,
+  assertBackupIsFor,
+  decryptShareBackup,
+  encryptShareBackup,
+  parseShareBackup,
   dealShares,
   fromBase64Url,
   generateRecipientKeyPair,
@@ -640,6 +644,65 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
     }
     await shareStore.deleteRecipientKey(req.keygenId);
     return { fingerprint: req.fingerprint, partyIndex: req.partyIndex };
+  },
+
+  /**
+   * Backup file of this device's own share (never another participant's).
+   * Needs the wallet password again, like revealing the recovery phrase, and
+   * a separate backup password that encrypts the file. Only ciphertext and
+   * public context leave the worker.
+   */
+  async qdExportShareBackup({ walletId, password, backupPassword }) {
+    requireUnlocked();
+    await verifyAgainstVault(password);
+    if (backupPassword === password) throw new OpError('BACKUP_PASSWORD_REUSED', 'Use a backup password different from your wallet password');
+    if (!shareStore.unlocked) await shareStore.unlock(password);
+    touch();
+    const info = await shareStore.shareInfo(walletId);
+    if (!info) throw new OpError('NO_SHARE', 'This device holds no key share for this wallet');
+    const bytes = await shareStore.shareBytes(walletId);
+    try {
+      const file = await encryptShareBackup(info, bytes, backupPassword);
+      return { file: JSON.stringify(file, null, 2) };
+    } catch (e) {
+      if (e instanceof VaultError && e.code === 'WEAK_PASSWORD') throw new OpError('WEAK_PASSWORD', e.message);
+      throw e;
+    } finally {
+      wipe(bytes);
+    }
+  },
+
+  /**
+   * Backup of this device's share that opens with the wallet password (the
+   * share store's Argon2id key, through HKDF). Needs no password: the result
+   * is ciphertext exactly as guessable as the share store this origin can
+   * already read from IndexedDB.
+   */
+  async qdAutoShareBackup({ walletId }) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    return { file: JSON.stringify(await shareStore.walletPasswordBackup(walletId), null, 2) };
+  },
+
+  /**
+   * Restores this participant's share from a backup file. Refused unless the
+   * file is for the wallet's current key and this participant's index, and
+   * the decrypted share matches that key's fingerprint.
+   */
+  async qdRestoreShareBackup({ file, backupPassword, expected }) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    const parsed = parseShareBackup(file);
+    assertBackupIsFor(parsed, expected);
+    const { context, share } = await decryptShareBackup(parsed, backupPassword);
+    try {
+      await shareStore.putShare({ ...context, storedAt: new Date().toISOString() }, share);
+    } finally {
+      wipe(share);
+    }
+    return { fingerprint: context.fingerprint, partyIndex: context.partyIndex };
   },
 
   // ---- shared-wallet networked signing (QD-Wallet Alg. 4) ----

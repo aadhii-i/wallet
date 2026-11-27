@@ -21,6 +21,8 @@ import {
 } from '@qd/rpc';
 import { getApi } from '@/lib/api';
 import { VaultClientError, vault } from '@/lib/vault-client';
+import { parseShareBackup, type ShareBackupKey } from '@qd/wallet-core';
+import { backupFileName, downloadText } from './share-backup-file';
 import { formatWeiAsEth, parseEthToWei } from '@/lib/eth-amount';
 import { nativeSymbol } from '@/lib/shared-network';
 import { toast } from '@/lib/store';
@@ -102,6 +104,10 @@ const WORKER_MESSAGES: Record<string, string> = {
   SIGNING_REFUSED: 'This device refused the signing request.',
   SIGNER_STATE_LOST: 'This device lost its signing state (page reloaded). The session was ended; retry signing.',
   PROTOCOL_ABORT: 'This device detected an invalid protocol message and stopped signing.',
+  BACKUP_INVALID: 'This file is not a QD Wallet share backup, or it is damaged.',
+  BACKUP_WRONG_PASSWORD: 'Wrong password, or the file was modified.',
+  BACKUP_WRONG_KEY: 'This backup does not belong to you for this wallet’s current key.',
+  BACKUP_PASSWORD_REUSED: 'Use a backup password different from your wallet password.',
 };
 
 export function errorMessage(e: unknown): string {
@@ -1402,6 +1408,158 @@ function ProposalCard({ wallet, proposal: p }: { wallet: SharedWallet; proposal:
   );
 }
 
+// ---------- Share backup files ----------
+
+/** Download this device's own share, encrypted under a backup password. */
+function ShareBackupExport({ wallet, partyIndex }: { wallet: SharedWallet; partyIndex: number }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const [password, setPassword] = useState('');
+  const [backup, setBackup] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mismatch = confirm.length > 0 && confirm !== backup;
+
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { file } = await vault.call('qdExportShareBackup', { walletId: wallet.id, password, backupPassword: backup });
+      downloadText(backupFileName(wallet.name), file);
+      setPassword('');
+      setBackup('');
+      setConfirm('');
+      setOpen(false);
+      toast.success('Share backup downloaded', 'Keep the file and its password in separate safe places.');
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <div className="mt-3">
+        <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>
+          Back up my share
+        </Button>
+        <p className="mt-1 text-xs text-subtle">
+          Your share exists only on this device, and your recovery phrase does not restore it. When you received it, this device downloaded a backup file named after the
+          wallet and the date, which opens with your wallet password. Use this to make another copy under a separate backup password.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <section aria-label="Back up my share" className="mt-3 space-y-2 rounded-lg border border-line p-3">
+      <p className="text-xs text-muted">
+        The file contains only your share #{partyIndex}, encrypted with the backup password you choose. Anyone with the file and that password holds your share, but still
+        needs {wallet.key.generation?.threshold ?? 'enough'} shares to sign. The file is valid until the wallet’s key is regenerated.
+      </p>
+      <label htmlFor={`${id}-pw`} className="block text-sm font-medium">Wallet password</label>
+      <input id={`${id}-pw`} type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} className={inputClass()} />
+      <label htmlFor={`${id}-bk`} className="block text-sm font-medium">Backup password</label>
+      <input id={`${id}-bk`} type="password" autoComplete="new-password" value={backup} onChange={(e) => setBackup(e.target.value)} className={inputClass()} />
+      <label htmlFor={`${id}-cf`} className="block text-sm font-medium">Confirm backup password</label>
+      <input
+        id={`${id}-cf`}
+        type="password"
+        autoComplete="new-password"
+        value={confirm}
+        onChange={(e) => setConfirm(e.target.value)}
+        aria-invalid={mismatch}
+        className={inputClass(mismatch ? 'mismatch' : null)}
+      />
+      {mismatch && <p className="text-xs text-danger">The backup passwords do not match.</p>}
+      <p className="text-xs text-subtle">Use a different password from your wallet password. It cannot be recovered if you forget it.</p>
+      <div className="flex gap-2">
+        <Button size="sm" loading={busy} disabled={busy || !password || !backup || confirm !== backup} onClick={() => void save()}>
+          Download backup file
+        </Button>
+        <Button size="sm" variant="secondary" disabled={busy} onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+      </div>
+      <InlineError message={error} />
+    </section>
+  );
+}
+
+/** Restore this participant's share of the current key from a backup file. */
+function ShareBackupRestore({
+  wallet,
+  expected,
+  onRestored,
+}: {
+  wallet: SharedWallet;
+  expected: { walletId: string; keygenId: string; participantId: string; partyIndex: number; fingerprint: string };
+  onRestored: () => void;
+}) {
+  const id = useId();
+  const [file, setFile] = useState<File | null>(null);
+  const [kind, setKind] = useState<ShareBackupKey | null>(null);
+  const [backup, setBackup] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const restore = async () => {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const text = await file.text();
+      const res = await vault.call('qdRestoreShareBackup', { file: text, backupPassword: backup, expected });
+      setBackup('');
+      setFile(null);
+      setKind(null);
+      toast.success(`Share #${res.partyIndex} restored`, `This device can sign for ${wallet.name} again.`);
+      onRestored();
+    } catch (e) {
+      setError(
+        e instanceof VaultClientError && e.code === 'SHARE_MISMATCH'
+          ? 'The share in this file does not match the wallet’s key. Nothing was restored.'
+          : errorMessage(e),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-label="Restore my share" className="mt-3 space-y-2 rounded-lg border border-line p-3">
+      <p className="text-xs text-muted">Restore your share #{expected.partyIndex} from a backup file you downloaded earlier.</p>
+      <label htmlFor={`${id}-file`} className="block text-sm font-medium">Backup file</label>
+      <input
+        id={`${id}-file`}
+        type="file"
+        accept=".json,application/json"
+        onChange={(e) => {
+          const f = e.target.files?.[0] ?? null;
+          setFile(f);
+          setKind(null);
+          setError(null);
+          void f
+            ?.text()
+            .then((text) => setKind(parseShareBackup(text).key))
+            .catch(() => setError(WORKER_MESSAGES.BACKUP_INVALID!));
+        }}
+        className="block w-full text-sm"
+      />
+      <label htmlFor={`${id}-bk`} className="block text-sm font-medium">
+        {kind === 'wallet-password' ? 'Wallet password' : 'Backup password'}
+      </label>
+      {kind === 'wallet-password' && <p className="text-xs text-subtle">The wallet password you used when this file was made.</p>}
+      <input id={`${id}-bk`} type="password" autoComplete="off" value={backup} onChange={(e) => setBackup(e.target.value)} className={inputClass()} />
+      <Button size="sm" loading={busy} disabled={busy || !file || !backup} onClick={() => void restore()}>
+        Restore share
+      </Button>
+      <InlineError message={error} />
+    </section>
+  );
+}
+
 // ---------- Threshold Raccoon key generation (trusted dealer) ----------
 
 const short = (hex: string) => `${hex.slice(0, 8)}…${hex.slice(-8)}`;
@@ -1513,6 +1671,15 @@ function KeySetup({ wallet }: { wallet: SharedWallet }) {
           if (reason) await api.failKeyGeneration(wallet.id, current.id, reason).catch(() => undefined);
           throw e;
         }
+        // Back the share up at once, as a file that opens with the wallet password.
+        try {
+          const { file } = await vault.call('qdAutoShareBackup', { walletId: wallet.id });
+          const name = backupFileName(wallet.name);
+          downloadText(name, file);
+          toast.success('Share backup downloaded', `${name} opens with your wallet password. Keep a copy off this device.`);
+        } catch {
+          toast.error('Backup file not downloaded', 'Use “Back up my share” once the key is initialized.');
+        }
       }
       await api.acknowledgeShare(wallet.id, env);
     });
@@ -1559,6 +1726,19 @@ function KeySetup({ wallet }: { wallet: SharedWallet }) {
           <p className="text-xs">
             {holdsCurrent ? `This device holds share #${heldShare!.partyIndex}.` : local.data?.storeUnlocked === false && local.data.storeExists ? 'Unlock to check this device’s share.' : 'This device does not hold a share of the current key.'}
           </p>
+          {holdsCurrent && <ShareBackupExport wallet={wallet} partyIndex={heldShare!.partyIndex} />}
+          {!holdsCurrent && mine && wallet.key.keyGenerationId && wallet.key.fingerprint && (
+            <>
+              {passwordGate}
+              {!storeLocked && (
+                <ShareBackupRestore
+                  wallet={wallet}
+                  expected={{ walletId: wallet.id, keygenId: wallet.key.keyGenerationId, participantId: wallet.me.id, partyIndex: mine.partyIndex, fingerprint: wallet.key.fingerprint }}
+                  onRestored={() => void qc.invalidateQueries({ queryKey: ['qd-share', wallet.id] })}
+                />
+              )}
+            </>
+          )}
         </div>
       )}
 

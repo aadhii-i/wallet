@@ -63,6 +63,6 @@ There is no DKG for Threshold Raccoon in this codebase (or in the paper), so the
 - **Share consistency.** No participant can check that the shares lie on one polynomial: there is no VSS for this scheme here. That rests on the dealer's honesty and self-check.
 - **Classical authentication.** Encryption keys and acknowledgements are authenticated with classical P-256 device keys. A server that can also forge device signatures could substitute keys, and only the out-of-band safety-number comparison detects that.
 - **T = 1.** When ⌈N/2⌉ = 1 (N ≤ 2), every share equals `msk`. That matches a 1-of-N policy, but each participant can sign alone.
-- **Recovery.** The BIP-39 phrase does not recover a QD share. Wiping the wallet or losing the device loses the share; the only remedy is a new ceremony (and a new key).
+- **Recovery.** The BIP-39 phrase does not recover a QD share. Wiping the wallet or losing the device loses the share unless the participant made a share backup file (added later; see shared-wallet-key-generation.md §5.1). Otherwise the only remedy is a new ceremony (and a new key).
 - **Not done here.** Signing is not implemented across devices, and there is no on-chain verifier. An initialized key changes the proposal status to `awaiting_signing_session`, never to signed.
 - **Payload size.** A share is about 33 KB (3-of-5) to 36 KB (N = 64). Envelopes are uploaded one per request to stay under the 64 KB body limit.

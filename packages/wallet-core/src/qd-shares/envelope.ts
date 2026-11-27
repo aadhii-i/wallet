@@ -29,7 +29,10 @@ export class ShareProvisioningError extends Error {
       | 'SELF_CHECK_FAILED'
       | 'STORE_LOCKED'
       | 'STORE_CORRUPT'
-      | 'NOT_FOUND',
+      | 'NOT_FOUND'
+      | 'BACKUP_INVALID'
+      | 'BACKUP_WRONG_PASSWORD'
+      | 'BACKUP_WRONG_KEY',
     message: string,
   ) {
     super(message);

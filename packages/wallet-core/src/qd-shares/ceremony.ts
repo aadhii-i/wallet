@@ -156,6 +156,16 @@ export async function openShareEnvelope(
   envelope: ShareEnvelope,
 ): Promise<Uint8Array> {
   const plaintext = await openFromSender(recipientPrivateKey, context, envelope);
+  assertShareMatches(plaintext, context);
+  return plaintext;
+}
+
+/**
+ * Checks that an encoded share is exactly the one `context` describes:
+ * assigned index, (T, N) and the master-key fingerprint. Wipes `plaintext`
+ * and throws SHARE_MISMATCH otherwise.
+ */
+export function assertShareMatches(plaintext: Uint8Array, context: ShareContext): void {
   let key: KeyShare;
   try {
     key = decodeKeyShare(plaintext);
@@ -170,7 +180,6 @@ export async function openShareEnvelope(
       key.parties === context.parties &&
       bytesToHex(masterKeyFingerprint(key)) === context.fingerprint;
     if (!ok) throw new ShareProvisioningError('SHARE_MISMATCH', 'Received share does not match this key generation');
-    return plaintext;
   } catch (e) {
     wipe(plaintext);
     throw e;
