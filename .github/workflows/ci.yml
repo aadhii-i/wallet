@@ -78,6 +78,13 @@ jobs:
           SEPOLIA=publicnode=https://ethereum-sepolia-rpc.publicnode.com
           HISTORY=none
           if [ -n "$ALCHEMY_SEPOLIA_URL" ]; then
+            # Fail fast on a malformed secret (never echo its value): the API
+            # would otherwise fail every Sepolia call with
+            # "unsupported protocol scheme" and the specs would time out.
+            if ! [[ "$ALCHEMY_SEPOLIA_URL" =~ ^https://[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::E2E_ALCHEMY_SEPOLIA_URL must be only the full HTTPS URL, https://eth-sepolia.g.alchemy.com/v2/<key>: not just the key, no quotes, spaces or prefix."
+              exit 1
+            fi
             SEPOLIA="alchemy=$ALCHEMY_SEPOLIA_URL,$SEPOLIA"
             HISTORY=alchemy
             echo "E2E_SEPOLIA_HISTORY=1" >> "$GITHUB_ENV"
