@@ -100,3 +100,44 @@ func TestValidationErrorsDoNotEchoSecrets(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 }
+
+// Production may hold relayer keys for public testnets only, and only with
+// shared wallets enabled; mainnets and local chains are refused by chain id.
+func TestProductionRelayerKeysTestnetsOnly(t *testing.T) {
+	const key = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" // public Anvil fixture
+	prodEnv(t)
+	t.Setenv("ENABLE_SHARED_WALLETS", "true")
+	for _, id := range []string{"11155111", "84532", "421614", "80002"} {
+		t.Setenv("RELAYER_PRIVATE_KEY_"+id, key)
+	}
+	cfg, _ := Load()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("testnet relayer keys refused in production: %v", err)
+	}
+	for _, id := range []string{"1", "8453", "42161", "137", "31337", "296", "999999"} {
+		t.Run(id, func(t *testing.T) {
+			t.Setenv("RELAYER_PRIVATE_KEY_"+id, key)
+			cfg, _ := Load()
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), "RELAYER_PRIVATE_KEY_"+id+" is refused") {
+				t.Fatalf("chain %s accepted in production: %v", id, err)
+			}
+			if strings.Contains(err.Error(), key[2:]) {
+				t.Fatal("validation error echoes the relayer key")
+			}
+		})
+	}
+	t.Setenv("ENABLE_SHARED_WALLETS", "false")
+	cfg, _ = Load()
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "ENABLE_SHARED_WALLETS") {
+		t.Fatalf("relayer keys without shared wallets accepted: %v", err)
+	}
+	// Development is unchanged: any chain is accepted by config (main.go then
+	// ignores keys for non-execution chains).
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("RELAYER_PRIVATE_KEY_1", key)
+	cfg, _ = Load()
+	if err := cfg.Validate(); err != nil && strings.Contains(err.Error(), "RELAYER_PRIVATE_KEY") {
+		t.Fatalf("development refused relayer keys: %v", err)
+	}
+}

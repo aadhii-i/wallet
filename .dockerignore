@@ -1,0 +1,21 @@
+# Build context for deploy/render/Dockerfile (repository root).
+# Secrets and local state must never enter an image.
+**/.env
+**/.env.*
+!**/.env.example
+.data/
+**/*.key
+**/*.pem
+
+# Rebuilt inside the image.
+**/node_modules/
+**/.next/
+**/out/
+**/bin/
+**/*.tsbuildinfo
+
+# Not needed to build.
+.git/
+**/test-results/
+**/playwright-report/
+**/coverage/

@@ -50,6 +50,7 @@ import (
 	"github.com/qdwallet/wallet-api/internal/store/memory"
 	"github.com/qdwallet/wallet-api/internal/store/postgres"
 	"github.com/qdwallet/wallet-api/internal/transaction"
+	"github.com/qdwallet/wallet-api/internal/webstatic"
 )
 
 func main() {
@@ -485,6 +486,18 @@ func run() error {
 			r.Get("/v1/hedera/{network}/account/{accountId}/history", hederaHandlers.GetHistory)
 		})
 	})
+
+	// Optionally serve the web app from this origin too (WEB_DIR): every path
+	// the API does not route gets the static export, with its per-page CSP.
+	if cfg.WebDir != "" {
+		web, err := webstatic.New(cfg.WebDir, webstatic.Options{PlainHTTP: !isProduction})
+		if err != nil {
+			return err
+		}
+		defer web.Close()
+		r.NotFound(web.ServeHTTP)
+		logger.Info("serving the web app", slog.String("dir", cfg.WebDir))
+	}
 
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: r}
 	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metrics.Handler()}
