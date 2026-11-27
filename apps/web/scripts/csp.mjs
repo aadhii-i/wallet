@@ -75,12 +75,16 @@ function walk(dir) {
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const out = fileURLToPath(new URL('../out', import.meta.url));
+  // An empty NEXT_PUBLIC_API_URL means the API shares the page's origin
+  // (wallet-api serving the export via WEB_DIR): 'self' already covers it.
   const apiOrigin = process.env.NEXT_PUBLIC_API_URL ?? 'https://api.qdwallet.example';
+  // Test builds only (e.g. a local Anvil for E2E). Production builds leave it unset.
+  const extraConnect = (process.env.EXTRA_CONNECT_SRC ?? '').split(' ').filter(Boolean);
   const lines = [];
   for (const file of walk(out).filter((f) => f.endsWith('.html'))) {
     const rel = relative(out, file).split(sep).join('/');
     const route = '/' + rel.replace(/(^|\/)index\.html$/, '').replace(/\.html$/, '');
-    lines.push(route, `  Content-Security-Policy: ${cspForHtml(readFileSync(file, 'utf8'), { apiOrigin })}`);
+    lines.push(route, `  Content-Security-Policy: ${cspForHtml(readFileSync(file, 'utf8'), { apiOrigin, extraConnect })}`);
     for (const [k, v] of Object.entries(STATIC_HEADERS)) lines.push(`  ${k}: ${v}`);
     lines.push('');
   }

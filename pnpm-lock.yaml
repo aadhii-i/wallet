@@ -35,6 +35,9 @@ importers:
       '@qd/evm':
         specifier: workspace:*
         version: link:../../packages/evm
+      '@qd/hedera':
+        specifier: workspace:*
+        version: link:../../packages/hedera
       '@qd/qd-account':
         specifier: workspace:*
         version: link:../../packages/qd-account
@@ -93,6 +96,9 @@ importers:
       '@playwright/test':
         specifier: 1.63.0
         version: 1.63.0
+      '@scure/btc-signer':
+        specifier: 2.4.1
+        version: 2.4.1
       '@tailwindcss/postcss':
         specifier: 4.3.3
         version: 4.3.3
@@ -192,6 +198,37 @@ importers:
       '@types/node':
         specifier: 24.13.6
         version: 24.13.6
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 5.0.5
+        version: 5.0.5(@types/node@24.13.6)(vite@8.3.8(@types/node@24.13.6)(jiti@2.7.0)(terser@5.51.2))
+
+  packages/hedera:
+    dependencies:
+      '@hashgraph/sdk':
+        specifier: 2.81.0
+        version: 2.81.0(bn.js@5.2.5)(react-native@0.88.1(@babel/core@7.29.13)(@types/react@19.3.0)(react@19.3.0))
+      '@hiero-ledger/proto':
+        specifier: npm:@hashgraph/proto@2.26.0-beta.3
+        version: '@hashgraph/proto@2.26.0-beta.3(ansi-regex@6.2.2)(ansi-styles@6.2.3)(debug@4.4.3)(protobufjs@8.8.1)(strip-ansi@7.1.2)'
+      '@noble/curves':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@noble/hashes':
+        specifier: 2.4.0
+        version: 2.4.0
+      '@qd/qd-crypto':
+        specifier: workspace:*
+        version: link:../qd-crypto
+      '@qd/wallet-core':
+        specifier: workspace:*
+        version: link:../wallet-core
+      '@scure/base':
+        specifier: 2.4.0
+        version: 2.4.0
+    devDependencies:
       typescript:
         specifier: 6.0.3
         version: 6.0.3
@@ -3141,6 +3178,15 @@ snapshots:
       ansi-regex: 6.2.2
       ansi-styles: 6.2.3
       debug: 4.4.1
+      long: 5.3.1
+      protobufjs: 8.8.1
+      strip-ansi: 7.1.2
+
+  '@hashgraph/proto@2.26.0-beta.3(ansi-regex@6.2.2)(ansi-styles@6.2.3)(debug@4.4.3)(protobufjs@8.8.1)(strip-ansi@7.1.2)':
+    dependencies:
+      ansi-regex: 6.2.2
+      ansi-styles: 6.2.3
+      debug: 4.4.3
       long: 5.3.1
       protobufjs: 8.8.1
       strip-ansi: 7.1.2

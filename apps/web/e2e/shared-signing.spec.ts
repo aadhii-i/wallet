@@ -1,3 +1,5 @@
+import { openSharedTask } from './shared-navigation';
+import {installHederaFixture,setHederaPayer,restoreHederaPayerMetadata,verifySharedHedera,verifyMigrationReviewScreen} from './hedera-shared-fixture';
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 import { HDKeyring, bytesToHex, fromHex } from '@qd/wallet-core';
 import { BITCOIN_TESTNET4_GENESIS, scriptPubKeyHex } from '@qd/bitcoin';
@@ -37,6 +39,7 @@ async function createLocalWallet(page: Page) {
   await page.getByRole('button', { name: /Tap to reveal/ }).click();
   const words = (await page.locator('ol li span.font-mono').allTextContents()).map((w) => w.trim());
   expect(words).toHaveLength(12);
+  if(process.env.QD_HEDERA_SHARED_ONLY==='1')await setHederaPayer(page,words);
   await page.getByRole('button', { name: 'I wrote it down' }).click();
   await expect(page.getByRole('heading', { name: 'Confirm your recovery phrase' })).toBeVisible();
   await expect(page.locator('legend')).toHaveCount(3);
@@ -48,6 +51,7 @@ async function createLocalWallet(page: Page) {
   await expect(page.getByRole('heading', { name: 'Your wallet is ready' })).toBeVisible();
   await page.getByRole('button', { name: 'Open wallet' }).click();
   await expect(page).toHaveURL(/\/home/);
+  if(process.env.QD_HEDERA_SHARED_ONLY==='1')await restoreHederaPayerMetadata(page,PASSWORD);
 }
 
 /** Uncaught errors in any participant's page (e.g. the former "chain.data is undefined" crash). */
@@ -55,9 +59,10 @@ const pageErrors: string[] = [];
 
 async function newParticipant(browser: Browser): Promise<Page> {
   const page = await (await browser.newContext()).newPage();
+  if(process.env.QD_HEDERA_SHARED_ONLY==='1')await installHederaFixture(page);
   page.on('pageerror', (e) => pageErrors.push(`${page.url()}: ${e.message}`));
   await createLocalWallet(page);
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Shared', exact: true }).filter({ visible: true }).first().click();
+  await page.getByRole('navigation', { name: 'Wallet type' }).getByRole('link', { name: 'Shared Wallet', exact: true }).filter({ visible: true }).first().click();
   await expect(page.getByRole('heading', { name: 'Shared wallets', level: 1 })).toBeVisible();
   return page;
 }
@@ -65,7 +70,13 @@ async function newParticipant(browser: Browser): Promise<Page> {
 const keyCard = (page: Page): Locator => page.getByRole('region', { name: 'Threshold key' });
 const card = (page: Page): Locator => page.getByRole('article', { name: new RegExp(`^Proposal: 0\\.02 ETH to ${RECIPIENT}$`, 'i') });
 
-test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign shared Bitcoin with Threshold Raccoon approval and a native quorum':'acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon key; executed and confirmed on Anvil', async ({ browser }) => {
+const signingScenario = process.env.QD_HEDERA_SHARED_ONLY === '1'
+  ? 'acceptance: shared Hedera creation, native quorum, Raccoon approval and HBAR transfer'
+  : process.env.QD_BITCOIN_SHARED_ONLY === '1'
+    ? 'acceptance: three devices sign shared Bitcoin with Threshold Raccoon approval and a native quorum'
+    : 'acceptance: ADHIL and NENA sign 0.02 ETH with a 2-of-3 Threshold Raccoon key; executed and confirmed on Anvil';
+
+test(signingScenario, async ({ browser }) => {
   // --- wallet with three independent participants ---
   const adhil = await newParticipant(browser);
   const create = adhil.getByRole('form', { name: 'Create shared wallet' });
@@ -73,6 +84,7 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   await create.getByLabel('Your display name').fill('ADHIL');
   await create.getByRole('button', { name: 'Create shared wallet' }).click();
   await expect(adhil.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
+  await openSharedTask(adhil, 'sw-participants');
   const joined: Page[] = [];
   for (const name of ['NENA', 'P3']) {
     await adhil.getByLabel('Invitation label').fill(name);
@@ -92,6 +104,7 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   const all = [adhil, nena, p3];
   for (const page of all) await expect(page.getByText('Required approvals: 2', { exact: true })).toBeVisible();
 
+  for (const page of all) await openSharedTask(page, 'sw-setup');
   // --- 2-of-3 key generation (trusted dealer = ADHIL's browser) ---
   await keyCard(adhil).getByRole('button', { name: 'Start key generation' }).click();
   for (const page of all) {
@@ -112,6 +125,7 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   // --- shared account: its smart-account address is derived on each device ---
   await adhil.getByLabel('Account name').fill('Treasury');
   await adhil.getByRole('button', { name: 'Add account' }).click();
+  for (const page of all) await openSharedTask(page, 'sw-accounts');
   await adhil.getByRole('button', { name: 'Derive smart-account address on this device' }).click();
   const addrEl = adhil.getByLabel('Smart account address');
   await expect(addrEl).toBeVisible();
@@ -129,17 +143,24 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   for (const page of all) await expect(page.getByLabel('Account balance')).toHaveText('1 ETH', { timeout: 30_000 });
   const recipientBefore = await balance(RECIPIENT);
 
+  if (process.env.QD_HEDERA_SHARED_ONLY === '1') {
+    await verifySharedHedera(all);
+    await verifyMigrationReviewScreen(adhil);
+    expect(pageErrors, pageErrors.join('\n')).toEqual([]);
+    return;
+  }
   await verifySharedBitcoin(all);
   if(process.env.QD_BITCOIN_SHARED_ONLY==='1'){expect(pageErrors,pageErrors.join('\n')).toEqual([]);return;}
+  for (const page of all) await openSharedTask(page, 'sw-proposals');
 
   // --- ADHIL proposes 0.02 ETH ---
-  const form = adhil.getByRole('form', { name: 'New proposal' });
-  await expect(form.getByText(`Sends from smart account ${address}`, { exact: false })).toBeVisible();
+  const form = adhil.getByRole('form', { name: 'Payment request' });
+  await expect(form.getByText(`Sends from shared address ${address}`, { exact: false })).toBeVisible();
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('0.02');
   await form.getByLabel('Network', { exact: true }).selectOption('11155111');
-  await form.getByRole('button', { name: 'Review proposal' }).click();
-  await adhil.getByRole('button', { name: 'Submit proposal' }).click();
+  await form.getByRole('button', { name: 'Review payment' }).click();
+  await adhil.getByRole('button', { name: 'Create payment request' }).click();
   await expect(card(adhil).getByLabel('Proposal status')).toHaveText('Awaiting approvals');
   for (const page of all) await expect(card(page).getByText(/\b(Submitted|Confirmed)\b/)).toHaveCount(0);
 
@@ -189,7 +210,11 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   expect(receipt.to.toLowerCase()).toBe(address);
   expect(await balance(RECIPIENT)).toBe(recipientBefore + 20_000_000_000_000_000n);
   expect(await balance(address)).toBe(980_000_000_000_000_000n);
+  await openSharedTask(adhil, 'sw-accounts');
+  await openSharedTask(adhil, 'sw-accounts');
   await expect(adhil.getByLabel('Account balance')).toHaveText('0.98 ETH', { timeout: 30_000 });
+  await openSharedTask(adhil, 'sw-proposals');
+  await openSharedTask(adhil, 'sw-proposals');
 
   // --- Shared → Personal: 0.01 ETH to P3's own personal wallet. Same transaction in both histories. ---
   const p3Address = (await p3.evaluate(() => (JSON.parse(localStorage.getItem('qd-meta')!) as { state: { accounts: { address: string }[] } }).state.accounts[0]!.address)).toLowerCase();
@@ -197,8 +222,8 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   await form.getByLabel('Recipient address').fill(p3Address);
   await form.getByLabel('Amount (ETH)').fill('0.01');
   await form.getByLabel('Network', { exact: true }).selectOption('11155111');
-  await form.getByRole('button', { name: 'Review proposal' }).click();
-  await adhil.getByRole('button', { name: 'Submit proposal' }).click();
+  await form.getByRole('button', { name: 'Review payment' }).click();
+  await adhil.getByRole('button', { name: 'Create payment request' }).click();
   const toP3 = (page: Page) => page.getByRole('article', { name: new RegExp(`^Proposal: 0\\.01 ETH to ${p3Address}$`, 'i') });
   await toP3(adhil).getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(toP3(nena).getByText('1/2 approvals', { exact: true })).toBeVisible();
@@ -206,6 +231,8 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   await expect(toP3(adhil).getByLabel('Proposal status')).toHaveText('Confirmed', { timeout: 240_000 });
   const p3Hash = (await toP3(adhil).getByLabel('Transaction hash', { exact: true }).textContent())!.trim();
   // Shared Wallet History (sender side): Sent 0.01 ETH, the same hash, from the chain index; PDF receipt from the re-verified receipt.
+  await openSharedTask(adhil, 'sw-wallet-history');
+  await openSharedTask(adhil, 'sw-wallet-history');
   const history = adhil.getByRole('region', { name: 'Wallet History', exact: true });
   await history.scrollIntoViewIfNeeded();
   const sentEntry = history.getByRole('listitem', { name: `Sent ETH ${p3Hash}` });
@@ -220,14 +247,16 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   expect(historyPdf.suggestedFilename()).toBe(`qd-wallet-receipt-11155111-${p3Hash.slice(0, 12)}.pdf`);
   expect(await balance(p3Address)).toBe(10_000_000_000_000_000n);
 
+  await openSharedTask(adhil, 'sw-proposals');
   // --- an over-budget proposal: every participant sees why it cannot execute; nothing is sent ---
+  await openSharedTask(adhil, 'sw-proposals');
   await expect(form.getByLabel('Nonce')).toHaveValue('2', { timeout: 30_000 });
   const relayerNonceBefore = await anvil<string>('eth_getTransactionCount', [RELAYER, 'latest']);
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('5');
   await form.getByLabel('Network', { exact: true }).selectOption('11155111');
-  await form.getByRole('button', { name: 'Review proposal' }).click();
-  await adhil.getByRole('button', { name: 'Submit proposal' }).click();
+  await form.getByRole('button', { name: 'Review payment' }).click();
+  await adhil.getByRole('button', { name: 'Create payment request' }).click();
   const big = (page: Page) => page.getByRole('article', { name: new RegExp(`^Proposal: 5 ETH to ${RECIPIENT}$`, 'i') });
   await big(adhil).getByRole('button', { name: 'Approve', exact: true }).click();
   await expect(big(nena).getByText('1/2 approvals', { exact: true })).toBeVisible();
@@ -273,7 +302,7 @@ test(process.env.QD_BITCOIN_SHARED_ONLY==='1'?'acceptance: three devices sign sh
   await expect(sheet.getByLabel('Funding address', { exact: true })).toHaveText(new RegExp(`^${RELAYER}$`, 'i'));
 
   // --- Personal Home → Activity (recipient side): P3 never took part in that proposal; the transfer is found on chain ---
-  await p3.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Home', exact: true }).filter({ visible: true }).first().click();
+  await p3.getByRole('navigation', { name: 'Wallet type' }).getByRole('link', { name: 'Individual Wallet', exact: true }).click();
   await p3.getByRole('button', { name: /^Network: .*Change network$/ }).click();
   await p3.getByRole('option', { name: /Sepolia/ }).click();
   await p3.getByRole('tab', { name: 'Activity' }).click();
@@ -301,6 +330,7 @@ function formatEth(wei: bigint): string {
 /** Public Bitcoin data are simulated; device authentication, encrypted shares,
  * workers, all Raccoon rounds and independent native signatures are real. */
 async function verifySharedBitcoin(pages:Page[]) {
+  for (const page of pages) await openSharedTask(page, 'sw-bitcoin');
   const panels=pages.map(page=>page.getByRole('region',{name:'Shared Bitcoin',exact:true}));
   for(const panel of panels)await panel.getByRole('button',{name:'Register my Bitcoin key'}).click();
   for(const panel of panels) {
@@ -335,6 +365,7 @@ async function verifySharedBitcoin(pages:Page[]) {
   });
   const key=await HDKeyring.fromMnemonic('abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about');
   const recipient=key.btcAddress(8,'p2wpkh','testnet4');key.lock();
+  for (const page of pages) await openSharedTask(page, 'sw-bitcoin-payments');
   let success=false;
   for(let attempt=0;attempt<12&&!success;attempt++) {
     const prepare=panels[0]!;

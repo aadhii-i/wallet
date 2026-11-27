@@ -16,6 +16,7 @@
     "@qd/bitcoin": "workspace:*",
     "@qd/blockchain": "workspace:*",
     "@qd/evm": "workspace:*",
+    "@qd/hedera": "workspace:*",
     "@qd/qd-account": "workspace:*",
     "@qd/qd-crypto": "workspace:*",
     "@qd/rpc": "workspace:*",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.63.0",
+    "@scure/btc-signer": "2.4.1",
     "@tailwindcss/postcss": "4.3.3",
     "@types/node": "24.13.6",
     "@types/qrcode": "1.5.6",

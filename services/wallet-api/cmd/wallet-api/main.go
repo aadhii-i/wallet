@@ -34,7 +34,9 @@ import (
 	"github.com/qdwallet/wallet-api/internal/blockchain/btc"
 	"github.com/qdwallet/wallet-api/internal/blockchain/evm"
 	"github.com/qdwallet/wallet-api/internal/blockchain/hedera"
+	"github.com/qdwallet/wallet-api/internal/hederashared"
 	"github.com/qdwallet/wallet-api/internal/indexer"
+	"github.com/qdwallet/wallet-api/internal/nativecustody"
 	"github.com/qdwallet/wallet-api/internal/platform/config"
 	"github.com/qdwallet/wallet-api/internal/platform/db"
 	"github.com/qdwallet/wallet-api/internal/platform/httpx"
@@ -48,6 +50,7 @@ import (
 	"github.com/qdwallet/wallet-api/internal/store/memory"
 	"github.com/qdwallet/wallet-api/internal/store/postgres"
 	"github.com/qdwallet/wallet-api/internal/transaction"
+	"github.com/qdwallet/wallet-api/internal/webstatic"
 )
 
 func main() {
@@ -148,6 +151,15 @@ func run() error {
 		return err
 	}
 
+	hederaSnapshot := ""
+	if cfg.StoreSnapshot != "" {
+		hederaSnapshot = cfg.StoreSnapshot + ".hedera-shared"
+	}
+	hederaRelay, err := hederashared.New(st, pgPool, hederaSnapshot)
+	if err != nil {
+		return err
+	}
+
 	// --- EVM network registry + RPC provider pools (§25) ---------------------
 	upstreamCounts := map[int64]int{}
 	pools := map[int64]*rpc.Pool{}
@@ -242,6 +254,23 @@ func run() error {
 	hederaMirror := hedera.NewMirror(hedera.MirrorConfig{BaseURL: cfg.HederaMirrorURL})
 	hederaSvc := hedera.NewService(hederaMirror)
 	hederaHandlers := hedera.NewHandlers(hederaSvc)
+	// The migration coordinator has read-only chain access. Only participant
+	// browsers can authorize, sign and submit the reviewed native operations.
+	migrationSnapshot := ""
+	if cfg.StoreSnapshot != "" {
+		migrationSnapshot = cfg.StoreSnapshot + ".native-migrations"
+	}
+	migrationRepo, err := nativecustody.NewMigrationRepository(pgPool, migrationSnapshot)
+	if err != nil {
+		return err
+	}
+	var bitcoinReader nativecustody.BitcoinReader
+	if btcSvc != nil {
+		bitcoinReader = btcSvc
+	}
+	nativeMigrations := nativecustody.NewCoordinator(st, migrationRepo, bitcoinRelay, hederaRelay, bitcoinReader, hederaSvc)
+	bitcoinRelay.SetMigrationGuard(nativeMigrations.Guard("bitcoin"))
+	hederaRelay.SetMigrationGuard(nativeMigrations.Guard("hedera"))
 
 	// --- HTTP handlers -----------------------------------------------------------
 	cookies := auth.CookieNames{Access: cfg.AccessCookieName(), Refresh: cfg.RefreshCookieName()}
@@ -431,6 +460,8 @@ func run() error {
 		if cfg.EnableSharedWallets {
 			sharedHandlers.Routes(r)
 			bitcoinRelay.Routes(r)
+			hederaRelay.Routes(r)
+			nativeMigrations.Routes(r)
 		}
 
 		r.Group(func(r chi.Router) {
@@ -449,10 +480,24 @@ func run() error {
 
 			// Hedera: Mirror Node balance lookup.
 			r.Get("/v1/hedera/{network}/account/{accountId}/balance", hederaHandlers.GetBalance)
+			r.Get("/v1/hedera/{network}/account/{accountId}/info", hederaHandlers.GetInfo)
+			r.Get("/v1/hedera/{network}/transaction/{transactionId}", hederaHandlers.GetTransaction)
 			// Hedera: Mirror Node transaction history.
 			r.Get("/v1/hedera/{network}/account/{accountId}/history", hederaHandlers.GetHistory)
 		})
 	})
+
+	// Optionally serve the web app from this origin too (WEB_DIR): every path
+	// the API does not route gets the static export, with its per-page CSP.
+	if cfg.WebDir != "" {
+		web, err := webstatic.New(cfg.WebDir, webstatic.Options{PlainHTTP: !isProduction})
+		if err != nil {
+			return err
+		}
+		defer web.Close()
+		r.NotFound(web.ServeHTTP)
+		logger.Info("serving the web app", slog.String("dir", cfg.WebDir))
+	}
 
 	server := &http.Server{Addr: cfg.HTTPAddr, Handler: r}
 	metricsServer := &http.Server{Addr: cfg.MetricsAddr, Handler: metrics.Handler()}

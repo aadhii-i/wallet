@@ -3,6 +3,7 @@ package transaction
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -125,13 +126,22 @@ func (h *ActivityHandlers) GetActivity(w http.ResponseWriter, r *http.Request) {
 	}
 	merged = append(merged, trackedToMerged(tracked, addrStrings)...)
 
+	// A failed history provider must not look like an empty history: the
+	// response says so (historyUnavailable) and the failure is logged. The
+	// error comes from internal/rpc, which strips provider URLs and keys.
+	historyUnavailable := false
 	if h.providers != nil {
 		if provider := h.providers.ProviderFor(networkID); provider != nil {
 			sentTo := sentToSet(merged)
 			items, err := provider.FetchActivity(r.Context(), networkID, addrStrings)
-			if err == nil {
+			switch {
+			case err == nil:
 				flagged := evm.DetectPoisoning(items, sentTo)
 				merged = append(merged, providerToMerged(flagged)...)
+			case r.Context().Err() == nil: // not a client that went away
+				historyUnavailable = true
+				slog.WarnContext(r.Context(), "activity: history provider failed",
+					slog.String("network", networkID), slog.String("error", err.Error()))
 			}
 		}
 	}
@@ -173,6 +183,9 @@ func (h *ActivityHandlers) GetActivity(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"items": out}
 	if nextCursor != "" {
 		resp["nextCursor"] = nextCursor
+	}
+	if historyUnavailable {
+		resp["historyUnavailable"] = true
 	}
 	httpx.WriteJSON(w, http.StatusOK, resp)
 }

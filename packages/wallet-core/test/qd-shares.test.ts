@@ -235,6 +235,17 @@ describe('QdShareStore (encrypted at rest, separate Argon2id salt)', () => {
     expect(await restored.shareBytes(WALLET)).toEqual(replacement);
   });
 
+  it('authenticates Hedera recovery backups and preserves archived shares through password rotation',async()=>{
+    const store=new QdShareStore(memoryKv(),opts),id='ef'.repeat(32),plain=new TextEncoder().encode('private share backup test');
+    await store.unlock(PW);await store.putShare(info,shareBytes);await store.archiveHederaShare(id,WALLET);
+    const backup=await store.sealHederaBackup(id,plain);
+    await store.rekey('rotated strong password 42!');
+    expect(await store.shareBytes(`hedera:${id}`)).toEqual(shareBytes);
+    expect(await store.openHederaBackup(backup,PW)).toEqual(plain);
+    await expect(store.openHederaBackup({...backup,policyId:'ab'.repeat(32)},PW)).rejects.toThrow();
+    await expect(store.openHederaBackup(backup,'wrong password 42!')).rejects.toThrow();
+  });
+
   it('detects tampering with the authenticated metadata', async () => {
     const kv = memoryKv();
     const store = new QdShareStore(kv, opts);

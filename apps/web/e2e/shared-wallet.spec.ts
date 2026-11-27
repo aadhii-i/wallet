@@ -1,3 +1,4 @@
+import { openSharedTask, openSharedDetails } from './shared-navigation';
 import { expect, test, type Browser, type Locator, type Page } from '@playwright/test';
 
 /**
@@ -44,7 +45,7 @@ async function createLocalWallet(page: Page) {
 
 /** In-app navigation (a full reload would lock the wallet). */
 async function openShared(page: Page) {
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Shared', exact: true }).filter({ visible: true }).first().click();
+  await page.getByRole('navigation', { name: 'Wallet type' }).getByRole('link', { name: 'Shared Wallet', exact: true }).filter({ visible: true }).first().click();
   await expect(page.getByRole('heading', { name: 'Shared wallets', level: 1 })).toBeVisible();
 }
 
@@ -70,9 +71,12 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
   await create.getByRole('button', { name: 'Create shared wallet' }).click();
   await expect(p1.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
   await expect(p1.getByText('Participants: 1', { exact: true })).toBeVisible();
+  await openSharedTask(p1, 'sw-setup');
+  await openSharedDetails(p1, 'Group details');
   await expect(p1.getByText('Authorization policy: 50%', { exact: true })).toBeVisible();
 
   // --- P1 invites four people; each code is read from the UI ---
+  await openSharedTask(p1, 'sw-participants');
   const codes: string[] = [];
   for (let i = 2; i <= 5; i++) {
     await p1.getByLabel('Invitation label').fill(`P${i}`);
@@ -97,6 +101,7 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(join.getByRole('group', { name: 'Invitation preview' })).toContainText('Invited by P1');
     await join.getByRole('button', { name: 'Accept invitation' }).click();
     await expect(page.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
+    await openSharedTask(page, 'sw-participants');
     others.push(page);
   }
   const [p2, p3, p4, p5] = others as [Page, Page, Page, Page];
@@ -107,25 +112,27 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(page.getByText('Required approvals: 3', { exact: true })).toBeVisible();
   }
   // Only the owner manages invitations.
-  await expect(p1.getByRole('heading', { name: 'Invitations' })).toBeVisible();
-  await expect(p2.getByRole('heading', { name: 'Invitations' })).toHaveCount(0);
+  await expect(p1.getByRole('heading', { name: 'Invitations', exact: true })).toBeVisible();
+  await expect(p2.getByRole('heading', { name: 'Invitations', exact: true })).toHaveCount(0);
 
+  await openSharedTask(p1, 'sw-setup');
   // --- P1 adds an account (not a participant) ---
   await p1.getByLabel('Account name').fill('Treasury');
   await p1.getByRole('button', { name: 'Add account' }).click();
   await expect(p1.getByRole('list', { name: 'Shared accounts' })).toContainText(/QD account #\d+ — address available once the wallet key is initialized/);
   await expect(p1.getByText('Participants: 5', { exact: true })).toBeVisible();
 
+  for (const page of all) await openSharedTask(page, 'sw-proposals');
   // --- P1 proposes 1 ETH on Anvil ---
-  const form = p1.getByRole('form', { name: 'New proposal' });
+  const form = p1.getByRole('form', { name: 'Payment request' });
   await expect(form.getByLabel('Sender account')).toContainText('Treasury');
   await form.getByLabel('Recipient address').fill(RECIPIENT);
   await form.getByLabel('Amount (ETH)').fill('1');
   await form.getByLabel('Network', { exact: true }).selectOption('11155111');
-  await form.getByRole('button', { name: 'Review proposal' }).click();
+  await form.getByRole('button', { name: 'Review payment' }).click();
   await expect(p1.getByText('This transaction requires approval from 3 of 5 participants.')).toBeVisible();
   await expect(p1.getByText(/requires approval from 3 of 5 participants/)).toBeVisible();
-  await p1.getByRole('button', { name: 'Submit proposal' }).click();
+  await p1.getByRole('button', { name: 'Create payment request' }).click();
 
   const card1 = proposalCard(p1);
   await expect(card1).toBeVisible();
@@ -184,6 +191,7 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
   await expect(outsider.getByRole('list', { name: 'Your shared wallets' })).toHaveCount(0);
   await expect(outsider.getByText(WALLET_NAME)).toHaveCount(0);
 
+  for (const page of all) await openSharedTask(page, 'sw-setup');
   // ===== Threshold Raccoon key generation (trusted dealer = P1's browser) =====
   for (const page of all) await expect(keyCard(page).getByText('Status: Not initialized')).toBeVisible();
   await expect(keyCard(p2).getByText('Waiting for the owner to start key generation.')).toBeVisible();
@@ -213,11 +221,27 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
 
   // Each participant receives, verifies and stores only its own share; the key
   // stays uninitialized until the last one acknowledges.
+  // Each device also downloads a backup of its own share at once: "<wallet name> <date>.json".
+  const today = new Date();
+  const expectedName = `${WALLET_NAME} ${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}.json`;
+  const autoBackups: string[] = [];
   for (const [i, page] of all.entries()) {
     const card = keyCard(page);
     await expect(card.getByText('Status: Awaiting participant provisioning')).toBeVisible();
+    const downloading = page.waitForEvent('download');
     await card.getByRole('button', { name: 'Receive my share' }).click();
+    const download = await downloading;
+    expect(download.suggestedFilename()).toBe(expectedName);
+    const path = test.info().outputPath(`auto-backup-p${i + 1}.json`);
+    await download.saveAs(path);
+    autoBackups.push(path);
     if (i < all.length - 1) await expect(card.getByText(/Your share is stored\./)).toBeVisible();
+  }
+  const { readFile } = await import('node:fs/promises');
+  for (const [i, path] of autoBackups.entries()) {
+    const f = JSON.parse(await readFile(path, 'utf8'));
+    expect(f).toMatchObject({ format: 'qd-wallet-share-backup', v: 1, key: 'wallet-password', context: { partyIndex: i + 1, threshold: 3, parties: 5 } });
+    expect(JSON.stringify(f)).not.toContain(PASSWORD);
   }
   const fingerprints: string[] = [];
   for (const [i, page] of all.entries()) {
@@ -226,11 +250,13 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(card.getByText('3-of-5 Threshold Raccoon key, provisioned to every participant.')).toBeVisible();
     await expect(card.getByText(`This device holds share #${i + 1}.`)).toBeVisible();
     fingerprints.push((await card.getByText(/^Key fingerprint:/).textContent()) ?? '');
+    await openSharedDetails(page, 'Group details');
     await expect(page.getByText('Key status: Key initialized')).toBeVisible();
   }
   expect(new Set(fingerprints).size).toBe(1);
   await expect(keyCard(outsider)).toHaveCount(0);
 
+  for (const page of all) await openSharedTask(page, 'sw-proposals');
   // The approved proposal now refers to an initialized key — but no signature exists.
   for (const page of all) {
     const card = proposalCard(page);
@@ -240,4 +266,69 @@ test('five participants reach a 3-of-5 approval threshold, then provision a 3-of
     await expect(card.getByText(/awaiting key generation/)).toHaveCount(0);
     await expect(card.getByText(/\b(Signed|Submitted|Confirmed)\b/)).toHaveCount(0);
   }
+
+  // --- P2 backs up its share, loses this browser's share storage, and restores it from the file ---
+  const backupPassword = 'Backup-Zebra-Lamp-77';
+  await openSharedTask(p2, 'sw-setup');
+  await keyCard(p2).getByRole('button', { name: 'Back up my share' }).click();
+  const backupForm = p2.getByRole('region', { name: 'Back up my share' });
+  await backupForm.getByLabel('Wallet password').fill(PASSWORD);
+  await backupForm.getByLabel('Backup password', { exact: true }).fill(PASSWORD);
+  await backupForm.getByLabel('Confirm backup password').fill(PASSWORD);
+  await backupForm.getByRole('button', { name: 'Download backup file' }).click();
+  await expect(backupForm.getByText('Use a backup password different from your wallet password.', { exact: true })).toBeVisible();
+  await backupForm.getByLabel('Backup password', { exact: true }).fill(backupPassword);
+  await backupForm.getByLabel('Confirm backup password').fill(backupPassword);
+  const downloading = p2.waitForEvent('download');
+  await backupForm.getByRole('button', { name: 'Download backup file' }).click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toBe(expectedName);
+  const backupPath = test.info().outputPath('share-backup.json');
+  await download.saveAs(backupPath);
+  const backup = JSON.parse(await readFile(backupPath, 'utf8'));
+  expect(backup).toMatchObject({ format: 'qd-wallet-share-backup', v: 1, key: 'backup-password', context: { partyIndex: 2, threshold: 3, parties: 5 } });
+  expect(JSON.stringify(backup)).not.toContain(backupPassword);
+
+  // Lose the share: close the app (stopping its key worker), delete only the share store, reopen.
+  const ctx2 = p2.context();
+  await p2.close();
+  const blank = await ctx2.newPage();
+  await blank.goto('/index.txt');
+  await blank.evaluate(
+    () => new Promise<void>((resolve, reject) => {
+      const req = indexedDB.deleteDatabase('qd-shares');
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(new Error('delete failed'));
+      req.onblocked = () => reject(new Error('delete blocked'));
+    }),
+  );
+  await blank.goto('/');
+  await blank.getByLabel('Password', { exact: true }).fill(PASSWORD);
+  await blank.getByRole('button', { name: 'Unlock' }).click();
+  await expect(blank).toHaveURL(/\/home/);
+  await openShared(blank); // one wallet: its dashboard opens directly
+  await expect(blank.getByRole('heading', { name: WALLET_NAME })).toBeVisible();
+  await openSharedTask(blank, 'sw-setup');
+  const restoredCard = keyCard(blank);
+  await expect(restoredCard.getByText('This device does not hold a share of the current key.')).toBeVisible();
+  await restoredCard.getByLabel('Wallet password').fill(PASSWORD);
+  await restoredCard.getByRole('button', { name: 'Unlock key-share storage' }).click();
+
+  // Restore from the file downloaded automatically, with the wallet password.
+  const restore = blank.getByRole('region', { name: 'Restore my share' });
+  await restore.getByLabel('Backup file').setInputFiles(autoBackups[1]!);
+  await expect(restore.getByText('The wallet password you used when this file was made.')).toBeVisible();
+  await restore.getByLabel('Wallet password').fill(`${PASSWORD}x`);
+  await restore.getByRole('button', { name: 'Restore share' }).click();
+  await expect(restore.getByText('Wrong password, or the file was modified.')).toBeVisible();
+  await restore.getByLabel('Wallet password').fill(PASSWORD);
+  await restore.getByRole('button', { name: 'Restore share' }).click();
+  await expect(restoredCard.getByText('This device holds share #2.')).toBeVisible();
+  await expect(restoredCard.getByRole('button', { name: 'Back up my share' })).toBeVisible();
+
+  // A participant that still holds its share is not offered a restore (cross-participant files: wallet-core tests).
+  await openSharedTask(p3, 'sw-setup');
+  const p3card = keyCard(p3);
+  await expect(p3card.getByText('This device holds share #3.')).toBeVisible();
+  await expect(p3card.getByRole('region', { name: 'Restore my share' })).toHaveCount(0);
 });

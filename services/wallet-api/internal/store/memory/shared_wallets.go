@@ -96,6 +96,21 @@ func (s *sharedStore) GetWallet(_ context.Context, id uuid.UUID) (*store.SharedW
 	return cpWallet(w), nil
 }
 
+// LockNativeCustody shares the membership mutex; enrollment cannot race a roster change.
+func (s *sharedStore) LockNativeCustody(_ context.Context, walletID uuid.UUID, version int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.wallets[walletID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if w.MembershipVersion != version {
+		return store.ErrStale
+	}
+	w.NativeCustodyLocked = true
+	return nil
+}
+
 func (s *sharedStore) ListWalletsForUser(_ context.Context, userID uuid.UUID) ([]*store.SharedWallet, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -180,6 +195,9 @@ func (s *sharedStore) RevokeMember(_ context.Context, walletID, memberID, revoke
 	if !ok || !mok || m.WalletID != walletID {
 		return nil, store.ErrNotFound
 	}
+	if w.NativeCustodyLocked {
+		return nil, store.ErrNativeMigrationRequired
+	}
 	if m.Status == store.MemberRevoked {
 		return nil, store.ErrConflict
 	}
@@ -195,6 +213,11 @@ func (s *sharedStore) RevokeMember(_ context.Context, walletID, memberID, revoke
 func (s *sharedStore) CreateInvitation(_ context.Context, inv *store.SharedInvitation, maxOpen int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if w, ok := s.wallets[inv.WalletID]; !ok {
+		return store.ErrNotFound
+	} else if w.NativeCustodyLocked {
+		return store.ErrNativeMigrationRequired
+	}
 	open := 0
 	for _, i := range s.invitations {
 		if i.WalletID == inv.WalletID && i.Status == store.InvitationInvited && i.ExpiresAt.After(inv.CreatedAt) {
@@ -250,6 +273,9 @@ func (s *sharedStore) AcceptInvitation(_ context.Context, h []byte, member *stor
 		return nil, store.ErrInvitationInvalid
 	}
 	w := s.wallets[inv.WalletID]
+	if w.NativeCustodyLocked {
+		return nil, store.ErrNativeMigrationRequired
+	}
 	for _, m := range s.members {
 		if m.WalletID == w.ID && m.UserID == member.UserID && m.Status != store.MemberRevoked {
 			return nil, store.ErrConflict

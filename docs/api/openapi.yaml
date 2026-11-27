@@ -322,6 +322,12 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
                   nextCursor: { type: string }
+                  historyUnavailable:
+                    type: boolean
+                    description: |
+                      Present and true when the network's history provider failed (for example
+                      Alchemy over its quota). `items` then holds only tracked and indexed
+                      transfers, so an empty list does not mean the account has no history.
 
   /v1/btc/{network}/fees:
     parameters:
@@ -681,6 +687,104 @@ paths:
         "403": { $ref: "#/components/responses/Problem" }
         "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/hedera/{accountId}:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+      - { name: accountId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets, hedera]
+      operationId: hederaSharedMessages
+      description: Public signing messages for the active device-bound member and current key generation. No secret shares are returned.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: session, in: query, schema: { type: string, default: enrollment }, description: Enrollment room, recent proposals, or a proposal UUID. }
+      responses:
+        "200": { description: Public relay messages, content: { application/json: { schema: { type: object, required: [messages], properties: { messages: { type: array, items: { type: object, additionalProperties: true } } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [shared-wallets, hedera]
+      operationId: postHederaShared
+      description: Stores an immutable registered-device-signed public message. The relay does not verify Raccoon or sign or broadcast Hedera payments.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [keygenId, membershipVersion, kind, session, payload, signature]
+              properties:
+                keygenId: { type: string, format: uuid }
+                membershipVersion: { type: integer }
+                kind: { type: string, enum: [enrollment, policy, link, binding, creation, proposal, approve, r1, r2, r3, partial, final] }
+                session: { type: string }
+                payload: { type: string, maxLength: 1400000, description: Base64url UTF-8 JSON containing public data only. }
+                signature: { type: string, description: Base64url P-256 P1363 device signature over the scoped relay commitment. }
+      responses:
+        "200": { description: Stored public message, content: { application/json: { schema: { type: object, additionalProperties: true } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "403": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/hedera/{network}/account/{accountId}/info:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [testnet] } }
+      - { name: accountId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [hedera]
+      operationId: hederaAccountInfo
+      description: Returns the complete native account key and exact decimal-string tinybar balance for local threshold-policy verification. The configured Mirror Node is a trusted data provider.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200":
+          description: Account verification snapshot
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accountId, network, tinybars, balanceTimestamp, deleted, receiverSignatureRequired, key]
+                properties:
+                  accountId: { type: string }
+                  network: { type: string, enum: [testnet] }
+                  tinybars: { type: string, pattern: "^[0-9]+$" }
+                  balanceTimestamp: { type: string }
+                  deleted: { type: boolean }
+                  receiverSignatureRequired: { type: boolean }
+                  key: { type: object, required: [type, key], properties: { type: { type: string }, key: { type: string, description: Full native public key encoding, never a private key. } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /v1/hedera/{network}/transaction/{transactionId}:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [testnet] } }
+      - { name: transactionId, in: path, required: true, schema: { type: string }, description: SDK numeric account ID and valid-start timestamp with nine nanosecond digits. }
+    get:
+      tags: [hedera]
+      operationId: hederaSharedReceipt
+      description: Read-only transaction reconciliation. An absent or unindexed result is unknown. Shared confirmation must match the exact operation commitment in the native memo as well as SUCCESS.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      responses:
+        "200": { description: Lookup result, content: { application/json: { schema: { type: object, required: [found, transactionId], properties: { found: { type: boolean }, transactionId: { type: string }, result: { type: string }, intentMemo: { type: string, maxLength: 100 }, entityId: { type: string }, feeTinybars: { type: string }, timestamp: { type: string } } } } } }
+        "400": { $ref: "#/components/responses/Problem" }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
+  /v1/hedera/{network}/account/{accountId}/history:
+    parameters:
+      - { name: network, in: path, required: true, schema: { type: string, enum: [testnet] } }
+      - { name: accountId, in: path, required: true, schema: { type: string } }
+    get:
+      tags: [hedera]
+      operationId: hederaAccountHistory
+      description: Paginated native HBAR history. Shared-wallet callers set exact=true so tinybar amount and fee fields are decimal strings; the legacy default representation is preserved.
+      security: [{ cookieAuth: [] }, { bearerAuth: [] }]
+      parameters:
+        - { name: exact, in: query, schema: { type: boolean, default: false } }
+        - { name: cursor, in: query, schema: { type: string } }
+      responses:
+        "200": { description: History page, content: { application/json: { schema: { type: object, properties: { items: { type: array, items: { type: object, additionalProperties: true } }, nextCursor: { type: string } } } } } }
+        "404": { $ref: "#/components/responses/Problem" }
+        "503": { $ref: "#/components/responses/Problem" }
   /v1/shared-wallets:
     get:
       tags: [shared-wallets]
@@ -1333,6 +1437,133 @@ paths:
       responses:
         "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/KeyGeneration" } } } }
         "403": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/native-inventory:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      summary: Reconstruct authenticated current native policies
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/shared-wallets/{walletId}/native-migrations:
+    parameters:
+      - { name: walletId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      summary: List migrations for either participating group
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+    post:
+      tags: [shared-wallets]
+      summary: Prepare a native migration review
+      description: Requires targetWalletId and mappings for every native source account. Bitcoin mappings explicitly nominate outputs and fee caps.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object, required: [targetWalletId, mappings] }
+      responses:
+        "200": { description: Unsigned migration review }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      summary: Read a migration and this device participant access
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}/confirm:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      summary: Confirm the current review digest as a source or target participant
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}/cancel:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      summary: Cancel an unsigned draft without changing chain state
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}/attempts:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      summary: Register immutable reviewed native proposal bytes and transaction ID
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}/check:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      summary: Verify nominated native migration results using read-only chain queries
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}/review:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    post:
+      tags: [shared-wallets]
+      summary: Revise only fees or the Bitcoin nomination and require both quorums again
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
+        "409": { $ref: "#/components/responses/Problem" }
+  /v1/native-migrations/{migrationId}/messages:
+    parameters:
+      - { name: migrationId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [shared-wallets]
+      summary: Read real authenticated public signing messages for a registered attempt
+      description: Registered-device access only. No endpoint signs or submits a native transaction. See ADR 0024 for the canonical review and public policy contracts.
+      responses:
+        "200": { description: Public native inventory or revision-checked migration state }
+        "404": { $ref: "#/components/responses/Problem" }
         "409": { $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:

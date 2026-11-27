@@ -67,9 +67,12 @@ type RPCUpstream struct {
 }
 
 type Config struct {
-	AppEnv         Env
-	HTTPAddr       string
-	MetricsAddr    string
+	AppEnv      Env
+	HTTPAddr    string
+	MetricsAddr string
+	// WebDir (WEB_DIR, optional) is the web app's static export. When set, the
+	// API also serves the web app from its own origin (internal/webstatic).
+	WebDir         string
 	AllowedOrigins []string
 
 	// DevCredentialBurst, when > 0, raises the per-IP bursts for
@@ -112,8 +115,9 @@ type Config struct {
 	EnableLocalNetworks bool
 	// RelayerKeys (RELAYER_PRIVATE_KEY_<chainId>, hex secp256k1) pay gas to
 	// submit Raccoon-signed shared-wallet calls to QdAccount contracts. A
-	// relayer key cannot move shared funds. Refused in production while the
-	// on-chain Raccoon verifier is research-grade (ADR 0019).
+	// relayer key cannot move shared funds. While the on-chain Raccoon
+	// verifier is research-grade (ADR 0019), production accepts them only for
+	// the public testnets in ProductionRelayerChains, never for a mainnet.
 	RelayerKeys         map[int64]string
 	EnableSharedWallets bool
 	// RPCBackgroundRPS (RPC_BACKGROUND_RPS) paces background RPC work
@@ -194,6 +198,7 @@ func Load() (*Config, error) {
 		AppEnv:              Env(getenv("APP_ENV", string(EnvDevelopment))),
 		HTTPAddr:            getenv("HTTP_ADDR", ":8080"),
 		MetricsAddr:         getenv("METRICS_ADDR", ":9090"),
+		WebDir:              getenv("WEB_DIR", ""),
 		Store:               StoreKind(getenv("STORE", string(StoreMemory))),
 		StoreSnapshot:       os.Getenv("STORE_SNAPSHOT"),
 		EnableSharedWallets: getbool("ENABLE_SHARED_WALLETS", false),
@@ -361,8 +366,13 @@ func (c *Config) Validate() error {
 		if c.DevCredentialBurst != 0 {
 			errs = append(errs, "DEV_CREDENTIAL_RATE_BURST is a development-only setting and is refused in production")
 		}
-		if len(c.RelayerKeys) != 0 {
-			errs = append(errs, "RELAYER_PRIVATE_KEY_* is refused in production (research-grade on-chain Raccoon verifier)")
+		for _, chainID := range sortedChainIDs(c.RelayerKeys) {
+			if !ProductionRelayerChains[chainID] {
+				errs = append(errs, fmt.Sprintf("RELAYER_PRIVATE_KEY_%d is refused in production: shared-wallet execution is limited to public testnets (research-grade on-chain Raccoon verifier)", chainID))
+			}
+		}
+		if len(c.RelayerKeys) != 0 && !c.EnableSharedWallets {
+			errs = append(errs, "RELAYER_PRIVATE_KEY_* is set but ENABLE_SHARED_WALLETS is not true")
 		}
 	}
 	if len(errs) > 0 {
@@ -370,6 +380,27 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid configuration: %s", strings.Join(errs, "; "))
 	}
 	return nil
+}
+
+// ProductionRelayerChains are the only chains a production deployment may hold
+// a shared-wallet relayer key for: public testnets, whose coins have no real
+// value. Mainnets and local chains (Anvil) are deliberately absent. Every
+// entry must also be a shared-wallet execution chain (checked by a test in
+// internal/sharedwallet).
+var ProductionRelayerChains = map[int64]bool{
+	11155111: true, // Ethereum Sepolia
+	84532:    true, // Base Sepolia
+	421614:   true, // Arbitrum Sepolia
+	80002:    true, // Polygon Amoy
+}
+
+func sortedChainIDs[V any](m map[int64]V) []int64 {
+	ids := make([]int64, 0, len(m))
+	for id := range m {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids
 }
 
 // BTCEnabled reports whether Bitcoin support is configured. Bitcoin is off

@@ -7,6 +7,10 @@
 import {
   QdShareStore,
   ShareProvisioningError,
+  assertBackupIsFor,
+  decryptShareBackup,
+  encryptShareBackup,
+  parseShareBackup,
   dealShares,
   fromBase64Url,
   generateRecipientKeyPair,
@@ -30,11 +34,8 @@ import {
   validateMnemonic,
   type EncryptedVault,
   type VaultContents,
-  type BitcoinSharedContext,
 } from '@qd/wallet-core';
-import { BitcoinSigner, extractSignedTx, psbtOutpoints, bitcoinPolicyId, bitcoinWireText, bitcoinWireBytes,
-  signBitcoinEnrollment, sharedBitcoinMessage, signSharedBitcoin, finalizeSharedBitcoin, verifyBitcoinApproval,
-  type BitcoinSharedPolicy, type SharedBitcoinProposal } from '@qd/bitcoin';
+import { BitcoinSigner, extractSignedTx, psbtOutpoints } from '@qd/bitcoin';
 import { Transaction, PrivateKey } from '@hashgraph/sdk';
 import {
   QdParty,
@@ -52,6 +53,8 @@ import {
   verify as raccoonVerify,
 } from '@qd/qd-crypto';
 import { openKv } from './idb';
+import {createHederaWorker} from './hedera-worker';
+import {createBitcoinWorker} from './bitcoin-worker';
 import { BITCOIN_SCAN_LIMIT, ledgerState, recordDiscovery, reserveBitcoin, type BitcoinLedger } from './bitcoin-ledger';
 import type { VaultOps, VaultOp, VaultRequestMsg, VaultResponseMsg, VaultStatus } from './vault-protocol';
 
@@ -79,60 +82,6 @@ async function burnRaccoonSid(sid: string): Promise<void> {
     if (used.length >= 100000) throw new OpError('PROTOCOL_ABORT', 'Signing session storage limit reached');
     return [...used, sid];
   });
-}
-const bitcoinParties = new Map<string, { party: QdParty; key: KeyShare; message: string; stage: 1 | 2 }>();
-function clearBitcoinKey(key: KeyShare): void {
-  key.share.forEach((p) => p.fill(0));
-  key.seedsOut.forEach((s) => s.fill(0));
-  key.seedsIn.forEach((s) => s.fill(0));
-  key.chaincode.fill(0);
-}
-function bitcoinPolicyKey(id: string): string {
-  return `bitcoin-policy|${requireUnlocked().keyring.evmAddress(0)}|${id}`;
-}
-function bitcoinSharedLedger(id: string): string {
-  return `bitcoin-shared-ledger|${requireUnlocked().keyring.evmAddress(0)}|${id}`;
-}
-async function bitcoinMaterial(policy: BitcoinSharedPolicy, pinned = true) {
-  requireShareStore();
-  const { keyring } = requireUnlocked(),
-    id = bitcoinPolicyId(policy);
-  if (pinned && !(await btcKv.get(bitcoinPolicyKey(id))))
-    throw new Error('Compare and confirm the Bitcoin policy safety number first');
-  const slot = pinned ? `bitcoin:${id}` : policy.context.walletId;
-  const info = await shareStore.shareInfo(slot);
-  if (
-    !info ||
-    info.keygenId !== policy.context.keygenId ||
-    info.membershipVersion !== policy.context.membershipVersion ||
-    info.threshold !== policy.raccoonThreshold ||
-    info.parties !== policy.members.length
-  )
-    throw new Error('This Bitcoin policy does not match the local Raccoon share');
-  const member = policy.members.find((m) => m.partyIndex === info.partyIndex);
-  if (!member || member.participantId !== info.participantId || member.xpub !== keyring.btcSharedRoot(policy.context))
-    throw new Error('This device is not an enrolled native signer');
-  const bytes = await shareStore.shareBytes(slot);
-  let key: KeyShare;
-  try {
-    key = decodeKeyShare(bytes);
-  } finally {
-    wipe(bytes);
-  }
-  const party = new QdParty(key);
-  if (bitcoinWireText(encodePublicKey(party.publicKey(policy.derivationIndex))) !== policy.raccoonPublicKey) {
-    clearBitcoinKey(key);
-    throw new Error('Bitcoin Raccoon public key mismatch');
-  }
-  return { id, info, party, key, member };
-}
-async function requireBitcoinApproval(policy: BitcoinSharedPolicy, proposal: SharedBitcoinProposal): Promise<string> {
-  const message = Array.from(sharedBitcoinMessage(policy, proposal), (b) => b.toString(16).padStart(2, '0')).join('');
-  const saved = await btcKv.get<{ message: string }>(
-    `bitcoin-approval|${bitcoinPolicyKey(proposal.policyId)}|${proposal.id}`,
-  );
-  if (saved?.message !== message) throw new Error('Review and approve this Bitcoin proposal on this device');
-  return message;
 }
 /**
  * In-flight signing parties, in worker memory only (round state r_j must
@@ -199,12 +148,12 @@ async function adopt(contents: VaultContents): Promise<string> {
 }
 
 function lock(): void {
+  hederaWorker.lock();
   keyring?.lock();
   confirmations?.revokeAll();
   shareStore.lock();
   signingParties.clear(); // in-flight parties hold decoded share material
-  for(const state of bitcoinParties.values())clearBitcoinKey(state.key);
-  bitcoinParties.clear();
+  bitcoinWorker.lock();
   keyring = null;
   confirmations = null;
   hdSigner = null;
@@ -266,197 +215,19 @@ async function verifyAgainstVaultUnqueued(password: string): Promise<VaultConten
   }
 }
 
+const hederaWorker=createHederaWorker({unlocked:requireUnlocked,store:shareStore,requireShares:requireShareStore,burn:burnRaccoonSid,touch,
+ usedSids:async()=>await sharesKv.get<string[]>(USED_SIDS_KEY)??[],
+ mergeSids:async sids=>{await sharesKv.update<string[]>(USED_SIDS_KEY,previous=>{const merged=[...new Set([...(previous??[]),...sids])];if(merged.length>100000)throw new Error('Signing session history capacity reached');return merged;});}
+});
+
+const bitcoinWorker = createBitcoinWorker({unlocked:requireUnlocked,store:shareStore,requireShares:requireShareStore,burn:burnRaccoonSid,touch,
+ usedSids:async()=>await sharesKv.get<string[]>(USED_SIDS_KEY)??[],
+ mergeSids:async sids=>{await sharesKv.update<string[]>(USED_SIDS_KEY,previous=>{const merged=[...new Set([...(previous??[]),...sids])];if(merged.length>100000)throw new Error('Signing session history capacity reached');return merged;});}
+});
+
 const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps[K]['res']> } = {
-  async btcSharedEnroll({ context, participantId, derivationIndex }) {
-    const { keyring } = requireUnlocked();
-    requireShareStore();
-    touch();
-    const info = await shareStore.shareInfo(context.walletId);
-    if (
-      !info ||
-      info.keygenId !== context.keygenId ||
-      info.membershipVersion !== context.membershipVersion ||
-      info.participantId !== participantId ||
-      context.network !== 'testnet4'
-    )
-      throw new Error('Shared Bitcoin enrollment context mismatch');
-    const bytes = await shareStore.shareBytes(context.walletId);
-    let key: KeyShare;
-    try {
-      key = decodeKeyShare(bytes);
-    } finally {
-      wipe(bytes);
-    }
-    try {
-      const entry = {
-        ...context,
-        participantId,
-        partyIndex: info.partyIndex,
-        derivationIndex,
-        threshold: info.threshold,
-        parties: info.parties,
-        xpub: keyring.btcSharedRoot(context),
-        raccoonPublicKey: bitcoinWireText(encodePublicKey(new QdParty(key).publicKey(derivationIndex))),
-      };
-      return keyring.withBtcSharedPrivateKey(context, 0, 0, (privateKey) => signBitcoinEnrollment(entry, privateKey));
-    } finally {
-      clearBitcoinKey(key);
-    }
-  },
-  async btcSharedPin({ policy, confirmation }) {
-    const material = await bitcoinMaterial(policy, false);
-    try {
-      requireUnlocked().confirmations.consume(confirmation, {
-        kind: 'bitcoin-shared',
-        policyId: material.id,
-        message: material.id,
-      });
-      await shareStore.archiveBitcoinShare(material.id, policy.context.walletId);
-      await btcKv.set(bitcoinPolicyKey(material.id), policy);
-      return { policyId: material.id };
-    } finally {
-      clearBitcoinKey(material.key);
-    }
-  },
-  async btcSharedPlan({ policy, highestUsed }) {
-    const material = await bitcoinMaterial(policy);
-    try {
-      const key = bitcoinSharedLedger(material.id);
-      const state =
-        highestUsed === undefined
-          ? ledgerState(await btcKv.get<BitcoinLedger>(key))
-          : await btcKv.update<BitcoinLedger>(key, (value) => recordDiscovery(value, highestUsed));
-      return { next: state.next, unavailable: Object.keys(state.reservations) };
-    } finally {
-      clearBitcoinKey(material.key);
-    }
-  },
-  async btcSharedApprove({ policy, proposal, confirmation }) {
-    const material = await bitcoinMaterial(policy);
-    try {
-      const message = Array.from(sharedBitcoinMessage(policy, proposal), (b) => b.toString(16).padStart(2, '0')).join(
-        '',
-      );
-      requireUnlocked().confirmations.consume(confirmation, { kind: 'bitcoin-shared', policyId: material.id, message });
-      await btcKv.update<{ message: string; expiresAt: number }>(
-        `bitcoin-approval|${bitcoinPolicyKey(material.id)}|${proposal.id}`,
-        (previous) => {
-          if (previous && previous.message !== message)
-            throw new Error('This proposal identifier was already approved differently');
-          return { message, expiresAt: proposal.expiresAt };
-        },
-      );
-      return { message };
-    } finally {
-      clearBitcoinKey(material.key);
-    }
-  },
-  async btcSharedRound({ policy, proposal, round, inputs }) {
-    const message = await requireBitcoinApproval(policy, proposal),
-      stateKey = `${bitcoinPolicyKey(proposal.policyId)}|${proposal.id}`;
-    const cached = await btcKv.get<{ from: number; payload: string }>(`bitcoin-round|${stateKey}|${round}`);
-    if (cached) return cached;
-    const material = await bitcoinMaterial(policy);
-    const index = material.info.partyIndex;
-    if (!proposal.active.includes(index)) {
-      clearBitcoinKey(material.key);
-      throw new Error('This device is not a selected Raccoon signer');
-    }
-    try {
-      if (round === 1) {
-        await burnRaccoonSid(proposal.sid);
-        const output = material.party.round1({
-          sid: fromHexBytes(proposal.sid),
-          act: proposal.active,
-          derivationIndex: policy.derivationIndex,
-          msg: fromHexBytes(message),
-        });
-        bitcoinParties.set(stateKey, { party: material.party, key: material.key, message, stage: 1 });
-        const result = { from: index, payload: bitcoinWireText(encodeRound1(output)) };
-        await btcKv.set(`bitcoin-round|${stateKey}|${round}`, result);
-        return result;
-      }
-      clearBitcoinKey(material.key);
-      const state = bitcoinParties.get(stateKey);
-      if (!state || state.message !== message || state.stage !== round - 1)
-        throw new Error('Bitcoin signing state was lost; start a fresh proposal');
-      const ordered = proposal.active.map((from) => {
-        const found = inputs.filter((input) => input.from === from);
-        if (found.length !== 1) throw new Error('Incomplete Raccoon round');
-        return bitcoinWireBytes(found[0]!.payload);
-      });
-      if (round === 2) {
-        const output = state.party.round2(
-          fromHexBytes(proposal.sid),
-          ordered.map((b, i) => decodeRound1(proposal.active[i]!, b)),
-        );
-        state.stage = 2;
-        const result = { from: index, payload: bitcoinWireText(encodeRound2(output, proposal.active)) };
-        await btcKv.set(`bitcoin-round|${stateKey}|${round}`, result);
-        return result;
-      }
-      const output = state.party.round3(
-        fromHexBytes(proposal.sid),
-        ordered.map((b, i) => decodeRound2(proposal.active[i]!, b, proposal.active)),
-      );
-      const result = { from: index, payload: bitcoinWireText(encodeRound3(output)) };
-      bitcoinParties.delete(stateKey);
-      clearBitcoinKey(state.key);
-      await btcKv.set(`bitcoin-round|${stateKey}|${round}`, result);
-      return result;
-    } catch (error) {
-      const state = bitcoinParties.get(stateKey);
-      if (state) {
-        clearBitcoinKey(state.key);
-        bitcoinParties.delete(stateKey);
-      }
-      clearBitcoinKey(material.key);
-      throw error;
-    }
-  },
-  async btcSharedNativeSign({ policy, proposal, approval }) {
-    await requireBitcoinApproval(policy, proposal);
-    const material = await bitcoinMaterial(policy);
-    try {
-      verifyBitcoinApproval(policy, proposal, approval);
-      const previous = ledgerState(await btcKv.get<BitcoinLedger>(bitcoinSharedLedger(material.id))).signed[proposal.id]
-        ?.raw;
-      if (previous) return { partial: previous, from: material.info.partyIndex };
-      let partial = '';
-      const points = psbtOutpoints(proposal.psbt),
-        ledgerKey = bitcoinSharedLedger(material.id);
-      await btcKv.update<BitcoinLedger>(ledgerKey, (value) => {
-        const state = reserveBitcoin(value, proposal.id, points, proposal.changeIndex ?? undefined);
-        partial = signSharedBitcoin(policy, proposal, approval, material.info.partyIndex, (branch, index, fn) =>
-          requireUnlocked().keyring.withBtcSharedPrivateKey(policy.context, branch, index, fn),
-        );
-        return {
-          ...state,
-          signed: { ...state.signed, [proposal.id]: { txid: proposal.id, raw: partial, createdAt: Date.now() } },
-        };
-      });
-      return { partial, from: material.info.partyIndex };
-    } finally {
-      clearBitcoinKey(material.key);
-    }
-  },
-  async btcSharedFinalize({ policy, proposal, approval, partials }) {
-    const material = await bitcoinMaterial(policy);
-    try {
-      const slot = `bitcoin-final|${bitcoinPolicyKey(material.id)}|${proposal.id}`;
-      const cached = await btcKv.get<{ txid: string; raw: string; vsize: number }>(slot);
-      if (cached) {
-        await requireBitcoinApproval(policy, proposal);
-        return cached;
-      }
-      await requireBitcoinApproval(policy, proposal);
-      const finalized = finalizeSharedBitcoin(policy, proposal, approval, partials);
-      await btcKv.set(slot, finalized);
-      return finalized;
-    } finally {
-      clearBitcoinKey(material.key);
-    }
-  },
+  ...hederaWorker.handlers,
+  ...bitcoinWorker.handlers,
   async status(): Promise<VaultStatus> {
     const vault = await loadVault();
     return { hasVault: !!vault, unlocked: !!keyring, backedUp, lockedUntil: await lockedUntil() };
@@ -873,6 +644,65 @@ const handlers: { [K in VaultOp]: (args: VaultOps[K]['req']) => Promise<VaultOps
     }
     await shareStore.deleteRecipientKey(req.keygenId);
     return { fingerprint: req.fingerprint, partyIndex: req.partyIndex };
+  },
+
+  /**
+   * Backup file of this device's own share (never another participant's).
+   * Needs the wallet password again, like revealing the recovery phrase, and
+   * a separate backup password that encrypts the file. Only ciphertext and
+   * public context leave the worker.
+   */
+  async qdExportShareBackup({ walletId, password, backupPassword }) {
+    requireUnlocked();
+    await verifyAgainstVault(password);
+    if (backupPassword === password) throw new OpError('BACKUP_PASSWORD_REUSED', 'Use a backup password different from your wallet password');
+    if (!shareStore.unlocked) await shareStore.unlock(password);
+    touch();
+    const info = await shareStore.shareInfo(walletId);
+    if (!info) throw new OpError('NO_SHARE', 'This device holds no key share for this wallet');
+    const bytes = await shareStore.shareBytes(walletId);
+    try {
+      const file = await encryptShareBackup(info, bytes, backupPassword);
+      return { file: JSON.stringify(file, null, 2) };
+    } catch (e) {
+      if (e instanceof VaultError && e.code === 'WEAK_PASSWORD') throw new OpError('WEAK_PASSWORD', e.message);
+      throw e;
+    } finally {
+      wipe(bytes);
+    }
+  },
+
+  /**
+   * Backup of this device's share that opens with the wallet password (the
+   * share store's Argon2id key, through HKDF). Needs no password: the result
+   * is ciphertext exactly as guessable as the share store this origin can
+   * already read from IndexedDB.
+   */
+  async qdAutoShareBackup({ walletId }) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    return { file: JSON.stringify(await shareStore.walletPasswordBackup(walletId), null, 2) };
+  },
+
+  /**
+   * Restores this participant's share from a backup file. Refused unless the
+   * file is for the wallet's current key and this participant's index, and
+   * the decrypted share matches that key's fingerprint.
+   */
+  async qdRestoreShareBackup({ file, backupPassword, expected }) {
+    requireUnlocked();
+    requireShareStore();
+    touch();
+    const parsed = parseShareBackup(file);
+    assertBackupIsFor(parsed, expected);
+    const { context, share } = await decryptShareBackup(parsed, backupPassword);
+    try {
+      await shareStore.putShare({ ...context, storedAt: new Date().toISOString() }, share);
+    } finally {
+      wipe(share);
+    }
+    return { fingerprint: context.fingerprint, partyIndex: context.partyIndex };
   },
 
   // ---- shared-wallet networked signing (QD-Wallet Alg. 4) ----

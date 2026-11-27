@@ -82,7 +82,23 @@ Approved proposals can be signed only when the active key's membership version a
 - **Decryption or verification failure.** The participant's client reports `decryption_failed` or `share_verification_failed`, which fails the ceremony.
 - **Duplicates.** A repeated key registration, envelope fetch or acknowledgement is refused (`ALREADY_REGISTERED`, `ALREADY_PROVISIONED`). Envelopes are frozen once committed, and envelopes from different dealer runs (different fingerprints) cannot be committed together.
 - **Membership change.** A change during a ceremony fails it (`membership_changed`). A change after initialization marks the key `rekey_required`; the new ceremony excludes revoked participants.
-- **Lost device or wiped wallet.** The share is gone; the BIP-39 phrase does not recover it. A new ceremony is required.
+- **Lost device or wiped wallet.** The BIP-39 phrase does not recover a share. Without its backup file (§5.1) the share is gone and a new ceremony is required.
+
+### 5.1 Share backup files
+
+Each participant's device keeps a backup **file** of its own share. Implementation: `packages/wallet-core/src/qd-shares/backup.ts`, key-worker ops `qdAutoShareBackup`, `qdExportShareBackup` and `qdRestoreShareBackup`.
+
+- **Automatic.** Right after "Receive my share" stores the share, the device downloads `<wallet name> <YYYY-MM-DD>.json` (local date; characters not allowed in file names are removed). The file opens with the **wallet password**: its key is HKDF-SHA256 of the share store's Argon2id key, and the file carries the store's KDF header. No extra prompt is needed, and the file is exactly as hard to guess as the share store this origin already keeps in IndexedDB. After a wallet-password change, an older file still opens with the old password.
+- **On request.** "Back up my share" on the Threshold key card makes another copy under a separate backup password, with the same file name.
+- **Contents.** JSON with the file kind (`wallet-password` or `backup-password`), the public share context (wallet, key generation, participant, party index, T, N, membership version, fingerprint), the KDF header and the ciphertext. Never the plaintext share, never another participant's share.
+- **Encryption.** Argon2id with the wallet's parameters (64 MiB, 2 passes), then AES-256-GCM. The AAD binds the format version, the file kind, the whole context and the KDF header, so an edited or relabelled file fails to decrypt and the KDF cannot be downgraded. A separate backup password must pass the wallet's strength check and differ from the wallet password.
+- **Export on request** asks for the wallet password again, as revealing the recovery phrase does.
+- **Restore** is offered only to a participant of the wallet's current key whose device holds no share. The worker refuses a file for another wallet, an earlier key or another participant (`BACKUP_WRONG_KEY`), then checks the decrypted share's index, T, N and fingerprint (`SHARE_MISMATCH`) before storing it.
+- **Threshold.** One stolen file plus its password yields one share, not T.
+- **Limits.**
+  - A file is valid only until the key is regenerated; after a rekey, back up again.
+  - Participants are bound to the browser's device key (`qd-device`), and the server treats a new device key as a new user. Restore therefore works only where this participant's device key still exists, i.e. when the share store alone was lost. "Remove wallet" and "Restore with recovery phrase" also delete the device key (`forgetDevice`), and a new device has a new one. For those cases the participant must first be **re-linked to the new device key**, which does not exist yet; until then the file is kept safe but cannot be restored there.
+
 
 ## 6. Manual test (5 browsers)
 

@@ -9,6 +9,9 @@ export const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
 export function hashPayload(payload: SigningPayload): Hex {
   let canonical: string;
   switch (payload.kind) {
+    case 'hedera-shared':
+      canonical=JSON.stringify(['hedera-shared-v1',payload.policyId,payload.message]);
+      break;
     case 'bitcoin-shared':
       canonical=JSON.stringify(['bitcoin-shared-v1',payload.policyId,payload.message]);
       break;

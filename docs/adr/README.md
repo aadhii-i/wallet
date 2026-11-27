@@ -23,5 +23,8 @@
 | [0020](0020-bitcoin-support-and-address-policy.md) | Bitcoin support and address policy | Accepted |
 | [0021](0021-bitcoin-change-recovery-and-utxo-validation.md) | Recoverable Bitcoin change and verified spending inputs | Implemented; locally validated |
 | [0022](0022-shared-bitcoin-native-multisig-and-raccoon.md) | Shared Bitcoin multisignature plus Raccoon approvals | Implemented research preview; release limits documented |
+| [0023](0023-shared-hedera-native-threshold-and-raccoon.md) | Shared Hedera native threshold custody and Raccoon approvals | Implemented Testnet research extension |
 
 ADR 0013 (threshold ECDSA for EVM EOAs) is still open. D1 showed that QD is a lattice scheme, not threshold ECDSA, so 0013 is only needed if ECDSA MPC accounts are still wanted.
+
+- [0024: Native shared-wallet release hardening and coordinated migration](0024-native-shared-wallet-release-hardening.md) — approved lifecycle; local hardening implemented; release gates pending.

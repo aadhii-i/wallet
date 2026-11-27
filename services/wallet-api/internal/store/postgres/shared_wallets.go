@@ -52,12 +52,12 @@ func parseUUIDs(ss []string) ([]uuid.UUID, error) {
 
 // ---- wallets ---------------------------------------------------------------
 
-const sharedWalletCols = `id, name, created_by, policy_version, policy_numerator, policy_denominator, policy_rounding, membership_version, key_status, key_generation_id, key_fingerprint, created_at`
+const sharedWalletCols = `id, name, created_by, policy_version, policy_numerator, policy_denominator, policy_rounding, membership_version, key_status, key_generation_id, key_fingerprint, created_at, native_custody_locked`
 
 func scanSharedWallet(row pgx.Row) (*store.SharedWallet, error) {
 	var w store.SharedWallet
 	var ks string
-	if err := row.Scan(&w.ID, &w.Name, &w.CreatedBy, &w.PolicyVersion, &w.PolicyNumerator, &w.PolicyDenominator, &w.PolicyRounding, &w.MembershipVersion, &ks, &w.KeyGenerationID, &w.KeyFingerprint, &w.CreatedAt); err != nil {
+	if err := row.Scan(&w.ID, &w.Name, &w.CreatedBy, &w.PolicyVersion, &w.PolicyNumerator, &w.PolicyDenominator, &w.PolicyRounding, &w.MembershipVersion, &ks, &w.KeyGenerationID, &w.KeyFingerprint, &w.CreatedAt, &w.NativeCustodyLocked); err != nil {
 		return nil, mapNotFound(err)
 	}
 	w.KeyStatus = store.KeyStatus(ks)
@@ -66,8 +66,8 @@ func scanSharedWallet(row pgx.Row) (*store.SharedWallet, error) {
 
 func (r *sharedRepo) CreateWallet(ctx context.Context, w *store.SharedWallet, owner *store.SharedMember) error {
 	return withTx(ctx, r.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO shared_wallets (`+sharedWalletCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-			w.ID, w.Name, w.CreatedBy, w.PolicyVersion, w.PolicyNumerator, w.PolicyDenominator, w.PolicyRounding, w.MembershipVersion, string(w.KeyStatus), w.KeyGenerationID, w.KeyFingerprint, w.CreatedAt); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO shared_wallets (`+sharedWalletCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+			w.ID, w.Name, w.CreatedBy, w.PolicyVersion, w.PolicyNumerator, w.PolicyDenominator, w.PolicyRounding, w.MembershipVersion, string(w.KeyStatus), w.KeyGenerationID, w.KeyFingerprint, w.CreatedAt, w.NativeCustodyLocked); err != nil {
 			return mapConflict(err)
 		}
 		return insertMember(ctx, tx, owner)
@@ -78,8 +78,19 @@ func (r *sharedRepo) GetWallet(ctx context.Context, id uuid.UUID) (*store.Shared
 	return scanSharedWallet(r.pool.QueryRow(ctx, `SELECT `+sharedWalletCols+` FROM shared_wallets WHERE id=$1`, id))
 }
 
+func (r *sharedRepo) LockNativeCustody(ctx context.Context, walletID uuid.UUID, version int64) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE shared_wallets SET native_custody_locked=true WHERE id=$1 AND membership_version=$2`, walletID, version)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return store.ErrStale
+	}
+	return nil
+}
+
 func (r *sharedRepo) ListWalletsForUser(ctx context.Context, userID uuid.UUID) ([]*store.SharedWallet, error) {
-	rows, err := r.pool.Query(ctx, `SELECT w.id, w.name, w.created_by, w.policy_version, w.policy_numerator, w.policy_denominator, w.policy_rounding, w.membership_version, w.key_status, w.key_generation_id, w.key_fingerprint, w.created_at
+	rows, err := r.pool.Query(ctx, `SELECT w.id, w.name, w.created_by, w.policy_version, w.policy_numerator, w.policy_denominator, w.policy_rounding, w.membership_version, w.key_status, w.key_generation_id, w.key_fingerprint, w.created_at, w.native_custody_locked
 		FROM shared_wallets w JOIN shared_wallet_members m ON m.wallet_id = w.id
 		WHERE m.user_id=$1 AND m.status='active' ORDER BY w.created_at`, userID)
 	if err != nil {
@@ -171,8 +182,12 @@ func (r *sharedRepo) GetActiveMemberByUser(ctx context.Context, walletID, userID
 func (r *sharedRepo) RevokeMember(ctx context.Context, walletID, memberID, revokedBy uuid.UUID, now time.Time) (*store.SharedWallet, error) {
 	var out *store.SharedWallet
 	err := withTx(ctx, r.pool, func(tx pgx.Tx) error {
-		if _, err := scanSharedWallet(tx.QueryRow(ctx, `SELECT `+sharedWalletCols+` FROM shared_wallets WHERE id=$1 FOR UPDATE`, walletID)); err != nil {
+		wallet, err := scanSharedWallet(tx.QueryRow(ctx, `SELECT `+sharedWalletCols+` FROM shared_wallets WHERE id=$1 FOR UPDATE`, walletID))
+		if err != nil {
 			return err
+		}
+		if wallet.NativeCustodyLocked {
+			return store.ErrNativeMigrationRequired
 		}
 		var status string
 		if err := tx.QueryRow(ctx, `SELECT status FROM shared_wallet_members WHERE id=$1 AND wallet_id=$2 FOR UPDATE`, memberID, walletID).Scan(&status); err != nil {
@@ -207,8 +222,12 @@ func scanInvitation(row pgx.Row) (*store.SharedInvitation, error) {
 
 func (r *sharedRepo) CreateInvitation(ctx context.Context, inv *store.SharedInvitation, maxOpen int) error {
 	return withTx(ctx, r.pool, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM shared_wallets WHERE id=$1 FOR UPDATE`, inv.WalletID); err != nil {
+		wallet, err := scanSharedWallet(tx.QueryRow(ctx, `SELECT `+sharedWalletCols+` FROM shared_wallets WHERE id=$1 FOR UPDATE`, inv.WalletID))
+		if err != nil {
 			return err
+		}
+		if wallet.NativeCustodyLocked {
+			return store.ErrNativeMigrationRequired
 		}
 		var open int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM shared_wallet_invitations WHERE wallet_id=$1 AND status='invited' AND expires_at > $2`, inv.WalletID, inv.CreatedAt).Scan(&open); err != nil {
@@ -217,7 +236,7 @@ func (r *sharedRepo) CreateInvitation(ctx context.Context, inv *store.SharedInvi
 		if open >= maxOpen {
 			return store.ErrLimit
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO shared_wallet_invitations (`+invitationCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		_, err = tx.Exec(ctx, `INSERT INTO shared_wallet_invitations (`+invitationCols+`) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 			inv.ID, inv.WalletID, inv.CodeHash, inv.Label, inv.InvitedBy, string(inv.Status), inv.ExpiresAt, inv.CreatedAt, inv.ResolvedAt, inv.ResolvedBy, inv.MemberID)
 		return mapConflict(err)
 	})
@@ -251,8 +270,12 @@ func (r *sharedRepo) AcceptInvitation(ctx context.Context, h []byte, member *sto
 		if err != nil || inv.Status != store.InvitationInvited || !now.Before(inv.ExpiresAt) {
 			return store.ErrInvitationInvalid
 		}
-		if _, err := tx.Exec(ctx, `SELECT 1 FROM shared_wallets WHERE id=$1 FOR UPDATE`, inv.WalletID); err != nil {
+		wallet, err := scanSharedWallet(tx.QueryRow(ctx, `SELECT `+sharedWalletCols+` FROM shared_wallets WHERE id=$1 FOR UPDATE`, inv.WalletID))
+		if err != nil {
 			return err
+		}
+		if wallet.NativeCustodyLocked {
+			return store.ErrNativeMigrationRequired
 		}
 		var active int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM shared_wallet_members WHERE wallet_id=$1 AND status='active'`, inv.WalletID).Scan(&active); err != nil {

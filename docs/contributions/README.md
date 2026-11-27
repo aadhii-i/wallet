@@ -10,6 +10,10 @@ explicitly.
 - [Supervisor contribution report](QD-Wallet-Contribution-Report.md)
 - [Evidence and validation record](evidence-2026-11-24.md)
 - [Milestone log](milestone-log.md)
+- [Individual and shared wallet modes](../changes/2026-11-26-wallet-modes.md)
+- [Simplified shared-wallet experience](../changes/2026-11-26-shared-wallet-usability.md)
+- [Native shared-wallet hardening and release status](../changes/2026-11-26-native-wallet-release-hardening.md)
+- [Shared Hedera implementation](../changes/2026-11-26-shared-hedera.md)
 - [Integration checkpoint](../changes/2026-11-24-main-integration.md)
 - [Bitcoin change and security milestone](../changes/2026-11-24-bitcoin-change-security.md)
 - [Bitcoin Raccoon approval proposal for review](../architecture/bitcoin-raccoon-approval-proposal.md)
@@ -54,3 +58,7 @@ every statement in comments. A passing test suite is not a security audit.
 The later [shared Bitcoin milestone](../changes/2026-11-24-shared-bitcoin-raccoon.md)
 records our native multisignature and Raccoon approval extension, with explicit
 credit to the existing shared-wallet and cryptographic work.
+
+The [shared Hedera milestone](../changes/2026-11-26-shared-hedera.md) records our
+native HBAR threshold-custody extension, recovery work, verification results and
+remaining membership/release limits.

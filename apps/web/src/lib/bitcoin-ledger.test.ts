@@ -23,6 +23,19 @@ describe('persistent Bitcoin reservations', () => {
   it('does not advance change for a transaction without change', () => {
     expect(reserveBitcoin(undefined, 'send-max', ['a:0']).next).toBe(0);
   });
+  it('keeps exhausted change recoverable without deriving beyond the bound', () => {
+    const state = recordDiscovery(undefined, 9998);
+    const exhausted = reserveBitcoin(state, 'last', ['a:0'], 9999);
+    expect(ledgerState(exhausted).next).toBe(10000);
+    expect(() => reserveBitcoin(exhausted, 'overflow', ['b:0'], 10000)).toThrow();
+    expect(reserveBitcoin(exhausted, 'sweep', ['b:0']).next).toBe(10000);
+  });
+  it('retains conflicting payment evidence when an explicit migration reserves its coins', () => {
+    const original=reserveBitcoin(undefined,'payment',['a:0']);
+    expect(()=>reserveBitcoin(original,'ordinary',['a:0'])).toThrow(/reserved/);
+    expect(reserveBitcoin(original,'migration',['a:0','b:0'],undefined,true).reservations)
+      .toEqual({'a:0':'payment','b:0':'migration'});
+  });
   it('fails closed on corrupted metadata', () => {
     expect(() => ledgerState({ ...ledgerState(), next: -1 })).toThrow();
     expect(() => recordDiscovery(undefined, NaN)).toThrow();

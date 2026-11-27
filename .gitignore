@@ -9,6 +9,9 @@ coverage/
 .env.*
 !.env.example
 /test-results/
+# Playwright output in any package (screenshots, traces, downloaded test files)
+**/test-results/*
+!**/test-results/.last-run.json
 /playwright-report/
 services/wallet-api/bin/
 services/wallet-api/tmp/

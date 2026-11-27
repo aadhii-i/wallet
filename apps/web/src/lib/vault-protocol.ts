@@ -1,22 +1,159 @@
+import type * as H from '@qd/hedera';
+import type { HederaSharedContext, PolicyBackup } from '@qd/wallet-core';
 import type { ConfirmationToken, SignatureResult, SigningPayload, SigningRequest } from '@qd/wallet-core';
 import type { BitcoinAddressType } from '@qd/blockchain';
 import type { BitcoinSharedContext } from '@qd/wallet-core';
-import type { BitcoinEnrollment, BitcoinSharedPolicy, SharedBitcoinProposal, BitcoinApproval, BitcoinRound } from '@qd/bitcoin';
+import type {
+  BitcoinEnrollment,
+  BitcoinSharedPolicy,
+  SharedBitcoinProposal,
+  BitcoinApproval,
+  BitcoinRound,
+  BitcoinConsent,
+} from '@qd/bitcoin';
 
 export type BitcoinNetworkName = 'mainnet' | 'testnet4';
 
 /** Typed message protocol between the UI thread and the KeyWorker. */
 export interface VaultOps {
+  hSharedEnroll: {
+    req: { context: HederaSharedContext; participantId: string; derivationIndex: number };
+    res: H.HederaEnrollment;
+  };
+  hSharedPin: { req: { policy: H.HederaSharedPolicy; confirmation: ConfirmationToken }; res: { policyId: string } };
+  hSharedBind: {
+    req: { policy: H.HederaSharedPolicy; account: H.HederaAccountInfo; confirmation: ConfirmationToken };
+    res: { accountId: string };
+  };
+  hSharedStatus: { req: { policy: H.HederaSharedPolicy }; res: import('./hedera-worker').HederaState };
+  hSharedApprove: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      proposal: H.HederaProposal;
+      account: H.HederaAccountInfo;
+      confirmation: ConfirmationToken;
+    };
+    res: H.HederaConsent;
+  };
+  hSharedRound: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      proposal: H.HederaProposal;
+      consents: H.HederaConsent[];
+      round: 1 | 2 | 3;
+      inputs: H.HederaRound[];
+    };
+    res: H.HederaRound;
+  };
+  hSharedNative: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      proposal: H.HederaProposal;
+      approval: H.HederaApproval;
+      account: H.HederaAccountInfo;
+    };
+    res: H.HederaPartial;
+  };
+  hSharedFinalize: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      proposal: H.HederaProposal;
+      approval: H.HederaApproval;
+      partials: H.HederaPartial[];
+    };
+    res: { raw: string; transactionId: string; expiresAt: number; intentMemo: string };
+  };
+  hSharedFinalizeRotation: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      source: H.HederaProposal;
+      sourceApproval: H.HederaApproval;
+      sourcePartials: H.HederaPartial[];
+      target: H.HederaProposal;
+      targetApproval: H.HederaApproval;
+      targetPartials: H.HederaPartial[];
+    };
+    res: { raw: string; transactionId: string; expiresAt: number; intentMemo: string };
+  };
+  hSharedCreate: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      plan: H.HederaPlan;
+      payerIndex: number;
+      payer: H.HederaAccountInfo;
+      confirmation: ConfirmationToken;
+    };
+    res: { raw: string; transactionId: string; expiresAt: number; intentMemo: string };
+  };
+  hSharedReconcile: {
+    req: {
+      policy: H.HederaSharedPolicy;
+      id: string;
+      account: H.HederaAccountInfo;
+      receipt: {
+        found: boolean;
+        transactionId: string;
+        result?: string;
+        timestamp?: string;
+        intentMemo?: string;
+        entityId?: string;
+      };
+    };
+    res: import('./hedera-worker').HederaState;
+  };
+  hSharedExport: { req: { policy: H.HederaSharedPolicy }; res: PolicyBackup };
+  hSharedImport: {
+    req: { backup: PolicyBackup; password: string };
+    res: { policy: H.HederaSharedPolicy; accountId?: string };
+  };
+
   btcSharedEnroll: {
     req: { context: BitcoinSharedContext; participantId: string; derivationIndex: number };
     res: BitcoinEnrollment;
   };
   btcSharedPin: { req: { policy: BitcoinSharedPolicy; confirmation: ConfirmationToken }; res: { policyId: string } };
-  btcSharedPlan: { req: { policy: BitcoinSharedPolicy; highestUsed?: number }; res: { next: number; unavailable: string[] } };
-  btcSharedApprove: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; confirmation: ConfirmationToken }; res: { message: string } };
-  btcSharedRound: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; round: 1|2|3; inputs: BitcoinRound[] }; res: BitcoinRound };
-  btcSharedNativeSign: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; approval: BitcoinApproval }; res: { partial: string; from: number } };
-  btcSharedFinalize: { req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; approval: BitcoinApproval; partials: string[] }; res: { txid: string; raw: string; vsize: number } };
+  btcSharedPlan: {
+    req: { policy: BitcoinSharedPolicy; highestUsed?: number };
+    res: { next: number; unavailable: string[] };
+  };
+  btcSharedApprove: {
+    req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; confirmation: ConfirmationToken };
+    res: { message: string; from: number; nonce: string };
+  };
+  btcSharedRound: {
+    req: {
+      policy: BitcoinSharedPolicy;
+      proposal: SharedBitcoinProposal;
+      consents: BitcoinConsent[];
+      round: 1 | 2 | 3;
+      inputs: BitcoinRound[];
+    };
+    res: BitcoinRound;
+  };
+  btcSharedNativeSign: {
+    req: { policy: BitcoinSharedPolicy; proposal: SharedBitcoinProposal; approval: BitcoinApproval };
+    res: { partial: string; from: number };
+  };
+  btcSharedFinalize: {
+    req: {
+      policy: BitcoinSharedPolicy;
+      proposal: SharedBitcoinProposal;
+      approval: BitcoinApproval;
+      partials: string[];
+    };
+    res: { txid: string; raw: string; vsize: number };
+  };
+  btcSharedStatus: { req: { policy: BitcoinSharedPolicy }; res: import('./bitcoin-worker').BitcoinSharedState };
+  btcSharedExport: { req: { policy: BitcoinSharedPolicy }; res: PolicyBackup };
+  btcSharedImport: { req: { backup: PolicyBackup; password: string }; res: { policy: BitcoinSharedPolicy } };
+  btcSharedSaved: {
+    req: { policy: BitcoinSharedPolicy; id: string };
+    res: { proposal: SharedBitcoinProposal; final?: { txid: string; raw: string; vsize: number } };
+  };
+  btcSharedReconcile: {
+    req: { policy: BitcoinSharedPolicy; id: string; txid: string; status: 'pending' | 'confirmed' };
+    res: void;
+  };
   status: { req: void; res: VaultStatus };
   create: { req: { password: string; words: 12 | 24 }; res: { address: string } };
   import: { req: { mnemonic: string; password: string }; res: { address: string } };
@@ -34,7 +171,13 @@ export interface VaultOps {
     res: { descriptor: string; xpub: string; fingerprint: string };
   };
   btcChangeAddresses: {
-    req: { account: number; start: number; count: number; network: BitcoinNetworkName; addressType: BitcoinAddressType };
+    req: {
+      account: number;
+      start: number;
+      count: number;
+      network: BitcoinNetworkName;
+      addressType: BitcoinAddressType;
+    };
     res: { address: string; changeIndex: number }[];
   };
   btcChangeDescriptor: {
@@ -43,7 +186,12 @@ export interface VaultOps {
   };
   btcChangePlan: {
     req: { account: number; network: BitcoinNetworkName; addressType: BitcoinAddressType; highestUsed?: number };
-    res: { address: string; index: number; unavailable: string[]; pending: { txid: string; raw: string; createdAt: number }[] };
+    res: {
+      address: string;
+      index: number;
+      unavailable: string[];
+      pending: { txid: string; raw: string; createdAt: number }[];
+    };
   };
   getBackupPhrase: { req: void; res: string };
   markBackedUp: { req: void; res: void };
@@ -67,11 +215,20 @@ export interface VaultOps {
   qdPrepareKeygen: { req: { walletId: string; keygenId: string; participantId: string }; res: { publicKey: string } };
   qdDeal: { req: QdDealRequest; res: QdDealResult };
   qdAcceptShare: { req: QdAcceptRequest; res: { fingerprint: string; partyIndex: number } };
+  /** This device's share, encrypted under a separate backup password: the file text (ciphertext + public context). */
+  qdExportShareBackup: { req: { walletId: string; password: string; backupPassword: string }; res: { file: string } };
+  /** This device's share as a backup file that opens with the wallet password; no prompt (made right after receiving the share). */
+  qdAutoShareBackup: { req: { walletId: string }; res: { file: string } };
+  /** Decrypts a backup file, checks it is this participant's share of the wallet's current key, stores it. */
+  qdRestoreShareBackup: { req: QdRestoreRequest; res: { fingerprint: string; partyIndex: number } };
   // Networked Threshold Raccoon signing. Results are public protocol values.
   qdAccountKey: { req: { walletId: string; derivationIndex: number }; res: QdAccountKey };
   qdSignRound: { req: QdSignRoundRequest; res: { payload: string } };
   qdForgetSession: { req: { sessionId: string }; res: void };
-  qdVerifySignature: { req: { walletId: string; derivationIndex: number; message: string; signature: string }; res: boolean };
+  qdVerifySignature: {
+    req: { walletId: string; derivationIndex: number; message: string; signature: string };
+    res: boolean;
+  };
   wipe: { req: void; res: void };
 }
 
@@ -166,4 +323,11 @@ export interface QdSignRoundRequest {
   publicKeyHash: string; // 0x + 64 hex; must equal this device's own pk_j hash
   round: 1 | 2 | 3;
   inputs: string[];
+}
+
+export interface QdRestoreRequest {
+  file: string;
+  backupPassword: string;
+  /** The wallet's current key as the server reports it, and this participant's place in it. */
+  expected: { walletId: string; keygenId: string; participantId: string; partyIndex: number; fingerprint: string };
 }
