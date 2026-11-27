@@ -309,7 +309,8 @@ export class ApiClient {
   }
   activity(accountId: string, network: string, cursor?: string) {
     const q = new URLSearchParams({ network, ...(cursor ? { cursor } : {}) });
-    return this.json<{ items: ActivityItem[]; nextCursor?: string }>('GET', `/v1/accounts/${accountId}/activity?${q}`);
+    // historyUnavailable: the server's history provider failed; items are incomplete.
+    return this.json<{ items: ActivityItem[]; nextCursor?: string; historyUnavailable?: boolean }>('GET', `/v1/accounts/${accountId}/activity?${q}`);
   }
   trackTransaction(t: {
     networkId: string;

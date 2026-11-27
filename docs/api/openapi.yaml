@@ -322,6 +322,12 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/ActivityItem" } }
                   nextCursor: { type: string }
+                  historyUnavailable:
+                    type: boolean
+                    description: |
+                      Present and true when the network's history provider failed (for example
+                      Alchemy over its quota). `items` then holds only tracked and indexed
+                      transfers, so an empty list does not mean the account has no history.
 
   /v1/btc/{network}/fees:
     parameters:
