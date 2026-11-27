@@ -84,6 +84,8 @@ func writeErr(w http.ResponseWriter, r *http.Request, err error) {
 		httpx.BadRequest(w, r, "INVITATION_INVALID", err.Error())
 	case errors.Is(err, ErrLimit):
 		httpx.Conflict(w, r, "LIMIT_REACHED", err.Error())
+	case errors.Is(err, store.ErrNativeMigrationRequired):
+		httpx.Conflict(w, r, "NATIVE_MIGRATION_REQUIRED", "Migrate native shared accounts with the current quorum before changing participants")
 	case errors.Is(err, ErrStale):
 		httpx.Conflict(w, r, "MEMBERSHIP_CHANGED", err.Error())
 	case errors.Is(err, ErrNonceInvalid):
@@ -209,10 +211,10 @@ func viewJSON(v *View) map[string]any {
 	}
 	out := map[string]any{
 		"id": v.Wallet.ID.String(), "name": v.Wallet.Name, "createdAt": ts(v.Wallet.CreatedAt),
-		"keyStatus": string(v.Wallet.KeyStatus),
-		"key":       keyJSON(v),
-		"policy":    policyJSON(v.Wallet, v.Active, v.Required),
-		"me":        memberJSON(v.Me), "participants": members, "accounts": accounts,
+		"keyStatus": string(v.Wallet.KeyStatus), "nativeCustodyLocked": v.Wallet.NativeCustodyLocked,
+		"key":    keyJSON(v),
+		"policy": policyJSON(v.Wallet, v.Active, v.Required),
+		"me":     memberJSON(v.Me), "participants": members, "accounts": accounts,
 	}
 	if v.Invitations != nil {
 		invs := make([]map[string]any, 0, len(v.Invitations))

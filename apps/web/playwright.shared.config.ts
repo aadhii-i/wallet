@@ -20,7 +20,7 @@ process.env.QD_E2E_ANVIL_URL = `http://127.0.0.1:${ANVIL_PORT}`;
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: /shared-(wallet|signing)\.spec\.ts/,
+  testMatch: /shared-(wallet|signing|modes)\.spec\.ts/,
   timeout: 600_000,
   expect: { timeout: 20_000 },
   fullyParallel: false,

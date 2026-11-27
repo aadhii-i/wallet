@@ -1,0 +1,27 @@
+{
+  "name": "@qd/hedera",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@hashgraph/sdk": "2.81.0",
+    "@hiero-ledger/proto": "npm:@hashgraph/proto@2.26.0-beta.3",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@qd/qd-crypto": "workspace:*",
+    "@qd/wallet-core": "workspace:*",
+    "@scure/base": "2.4.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}

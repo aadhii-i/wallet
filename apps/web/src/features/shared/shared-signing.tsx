@@ -157,7 +157,7 @@ export function AccountOnChain({ wallet, account }: { wallet: SharedWallet; acco
       ) : (
         <span className="block text-subtle">QD account #{account.derivationIndex} — no address registered yet</span>
       )}
-      {storeLocked && <span className="block text-subtle">Unlock key-share storage (Threshold key card) to derive or verify this address on this device.</span>}
+      {storeLocked && <span className="block text-subtle"><a href="#sw-setup" className="font-medium text-primary underline">Open wallet setup</a> to unlock signing and verify this address on this device.</span>}
       {key.isError && <span role="alert" className="block text-danger">Could not derive the account key on this device: {errorMessage(key.error)}</span>}
       {local && !mismatch && (!registered || !iAttested) && wallet.me.status === 'active' && (
         <Button size="sm" variant="secondary" loading={busy} onClick={() => void register()}>

@@ -48,12 +48,12 @@ test('renders Ethereum Sepolia history served by wallet-api', async ({ page }) =
 
   await expect(page.getByLabel('Total balance')).toContainText('SepoliaETH', { timeout: 40_000 });
 
-  type ActivityBody = { url: string; status: number; items: Array<{ flags?: unknown }> };
+  type ActivityBody = { url: string; status: number; items: Array<{ flags?: unknown }>; historyUnavailable: boolean };
   const bodies: ActivityBody[] = [];
   page.on('response', async (res) => {
     if (!res.url().includes('/activity?')) return;
-    const json = (await res.json().catch(() => null)) as { items?: ActivityBody['items'] } | null;
-    bodies.push({ url: res.url(), status: res.status(), items: json?.items ?? [] });
+    const json = (await res.json().catch(() => null)) as { items?: ActivityBody['items']; historyUnavailable?: boolean } | null;
+    bodies.push({ url: res.url(), status: res.status(), items: json?.items ?? [], historyUnavailable: json?.historyUnavailable === true });
   });
 
   await page.getByRole('link', { name: 'Activity', exact: true }).click();
@@ -61,10 +61,20 @@ test('renders Ethereum Sepolia history served by wallet-api', async ({ page }) =
 
   // Switching accounts aborts the previous query, and an aborted upstream fetch
   // answers 200 with nothing in it, so wait for a body that actually carried
-  // history rather than the first response to arrive.
+  // history rather than the first response to arrive. A body flagged
+  // historyUnavailable means wallet-api's history provider (Alchemy) failed,
+  // e.g. over its quota: the poll then reports that, not just "no items".
   await expect
-    .poll(() => bodies.filter((b) => b.items.length > 0).length, { timeout: 60_000, message: `bodies: ${JSON.stringify(bodies.map((b) => [b.status, b.items.length]))}` })
-    .toBeGreaterThan(0);
+    .poll(
+      () =>
+        bodies.some((b) => b.items.length > 0)
+          ? 'history received'
+          : bodies.some((b) => b.historyUnavailable)
+            ? 'history provider failed (see wallet-api log "activity: history provider failed"; in CI check the E2E_ALCHEMY_SEPOLIA_URL key and its quota)'
+            : 'waiting',
+      { timeout: 60_000, message: 'Sepolia activity from the history provider' },
+    )
+    .toBe('history received');
 
   for (const body of bodies.filter((b) => b.items.length > 0)) {
     for (const item of body.items) {

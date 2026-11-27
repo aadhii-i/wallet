@@ -1,3 +1,10 @@
+import {
+  nativeMigrationApprovalMessage,
+  type NativeMigrationView,
+  type NativeAccountMapping,
+  type NativeMigrationReview,
+  type NativeInventoryEntry,
+} from './native-migrations';
 import type {
   ActivityItem,
   ApiAccount,
@@ -165,12 +172,22 @@ export class ApiClient {
 
   private async challengeAndSubmit(path: '/v1/auth/login' | '/v1/auth/register'): Promise<Session> {
     const spki = await this.opts.deviceKey.publicKeySpki();
-    const ch = await this.json<Challenge>('POST', '/v1/auth/challenge', { devicePublicKey: b64url(spki) }, { auth: false });
+    const ch = await this.json<Challenge>(
+      'POST',
+      '/v1/auth/challenge',
+      { devicePublicKey: b64url(spki) },
+      { auth: false },
+    );
     this.assertChallenge(ch);
     const signature = b64url(await this.opts.deviceKey.sign(new TextEncoder().encode(ch.message)));
     const payload =
       path === '/v1/auth/register'
-        ? { challengeId: ch.challengeId, signature, platform: this.opts.platform, label: this.opts.deviceLabel ?? 'Web browser' }
+        ? {
+            challengeId: ch.challengeId,
+            signature,
+            platform: this.opts.platform,
+            label: this.opts.deviceLabel ?? 'Web browser',
+          }
         : { challengeId: ch.challengeId, signature };
     return this.json<Session>('POST', path, payload, { auth: false });
   }
@@ -206,7 +223,12 @@ export class ApiClient {
 
   // ---------- transport ----------
 
-  private async raw(method: string, path: string, body: string | undefined, o: { auth: boolean; headers?: Record<string, string> }): Promise<Response> {
+  private async raw(
+    method: string,
+    path: string,
+    body: string | undefined,
+    o: { auth: boolean; headers?: Record<string, string> },
+  ): Promise<Response> {
     const headers: Record<string, string> = { 'X-QD-Client': this.opts.clientType, ...o.headers };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (o.auth && UNSAFE.has(method) && this.csrfToken) headers['X-CSRF-Token'] = this.csrfToken;
@@ -253,7 +275,9 @@ export class ApiClient {
     return this.json<{ networks: ApiNetwork[] }>('GET', '/v1/networks', undefined, { auth: false });
   }
   prices(ids: string[]) {
-    return this.json<PricesResponse>('GET', `/v1/prices?ids=${encodeURIComponent(ids.join(','))}`, undefined, { auth: false });
+    return this.json<PricesResponse>('GET', `/v1/prices?ids=${encodeURIComponent(ids.join(','))}`, undefined, {
+      auth: false,
+    });
   }
   devices() {
     return this.json<{ devices: Device[] }>('GET', '/v1/devices');
@@ -277,11 +301,16 @@ export class ApiClient {
     return this.json<ApiAccount>('PATCH', `/v1/accounts/${accountId}`, patch);
   }
   registerAddress(accountId: string, address: string, proof: string) {
-    return this.json<ApiAddress>('PUT', `/v1/accounts/${accountId}/addresses`, { networkFamily: 'evm', address, proof });
+    return this.json<ApiAddress>('PUT', `/v1/accounts/${accountId}/addresses`, {
+      networkFamily: 'evm',
+      address,
+      proof,
+    });
   }
   activity(accountId: string, network: string, cursor?: string) {
     const q = new URLSearchParams({ network, ...(cursor ? { cursor } : {}) });
-    return this.json<{ items: ActivityItem[]; nextCursor?: string }>('GET', `/v1/accounts/${accountId}/activity?${q}`);
+    // historyUnavailable: the server's history provider failed; items are incomplete.
+    return this.json<{ items: ActivityItem[]; nextCursor?: string; historyUnavailable?: boolean }>('GET', `/v1/accounts/${accountId}/activity?${q}`);
   }
   trackTransaction(t: {
     networkId: string;
@@ -323,10 +352,7 @@ export class ApiClient {
     return this.json<{ fees: ApiBtcFees }>('GET', `/v1/btc/${network}/fees`);
   }
   btcUtxos(network: BitcoinNetworkName, address: string) {
-    return this.json<{ utxos: ApiBtcUtxo[] }>(
-      'GET',
-      `/v1/btc/${network}/address/${encodeURIComponent(address)}/utxos`,
-    );
+    return this.json<{ utxos: ApiBtcUtxo[] }>('GET', `/v1/btc/${network}/address/${encodeURIComponent(address)}/utxos`);
   }
   btcHistory(network: BitcoinNetworkName, address: string, cursor?: string) {
     const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
@@ -336,10 +362,7 @@ export class ApiClient {
     );
   }
   btcTransaction(network: BitcoinNetworkName, hash: string) {
-    return this.json<ApiBtcTransaction>(
-      'GET',
-      `/v1/btc/${network}/tx/${encodeURIComponent(hash)}`,
-    );
+    return this.json<ApiBtcTransaction>('GET', `/v1/btc/${network}/tx/${encodeURIComponent(hash)}`);
   }
   btcRawTransaction(network: BitcoinNetworkName, hash: string) {
     return this.json<{ raw: string }>('GET', `/v1/btc/${network}/tx/${encodeURIComponent(hash)}/raw`);
@@ -352,18 +375,137 @@ export class ApiClient {
   }
 
   bitcoinSharedMessages(walletId: string, accountId: string, session = 'enrollment') {
-    return this.json<{ messages: { id: string; from: string; kind: string; session: string; payload: string; signature: string; createdAt: string }[] }>(
-      'GET', `/v1/shared-wallets/${encodeURIComponent(walletId)}/bitcoin/${encodeURIComponent(accountId)}?session=${encodeURIComponent(session)}`);
+    return this.json<{
+      messages: {
+        id: string;
+        from: string;
+        kind: string;
+        session: string;
+        payload: string;
+        signature: string;
+        createdAt: string;
+      }[];
+    }>(
+      'GET',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/bitcoin/${encodeURIComponent(accountId)}?session=${encodeURIComponent(session)}`,
+    );
   }
 
-  async postBitcoinShared(walletId: string, accountId: string, keygenId: string, membershipVersion: number, kind: string, session: string, content: unknown) {
+  async postBitcoinShared(
+    walletId: string,
+    accountId: string,
+    keygenId: string,
+    membershipVersion: number,
+    kind: string,
+    session: string,
+    content: unknown,
+  ) {
     const payload = toB64url(new TextEncoder().encode(JSON.stringify(content)));
     if (payload.length > 1_400_000) throw new Error('Bitcoin signing message exceeds the coordinator limit');
     const digest = await sha256Hex(new TextEncoder().encode(payload));
-    const message = JSON.stringify(['QDWallet-BitcoinRelay/v1',walletId,accountId,keygenId,membershipVersion,kind,session,digest]);
+    const message = JSON.stringify([
+      'QDWallet-BitcoinRelay/v1',
+      walletId,
+      accountId,
+      keygenId,
+      membershipVersion,
+      kind,
+      session,
+      digest,
+    ]);
     const signature = await this.deviceSign(message);
-    return this.json('POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/bitcoin/${encodeURIComponent(accountId)}`,
-      { keygenId,membershipVersion,kind,session,payload,signature });
+    return this.json(
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/bitcoin/${encodeURIComponent(accountId)}`,
+      { keygenId, membershipVersion, kind, session, payload, signature },
+    );
+  }
+  hederaSharedMessages(walletId: string, accountId: string, session = 'enrollment') {
+    return this.json<{
+      messages: {
+        id: string;
+        from: string;
+        kind: string;
+        session: string;
+        payload: string;
+        signature: string;
+        createdAt: string;
+      }[];
+    }>(
+      'GET',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/hedera/${encodeURIComponent(accountId)}?session=${encodeURIComponent(session)}`,
+    );
+  }
+
+  async postHederaShared(
+    walletId: string,
+    accountId: string,
+    keygenId: string,
+    membershipVersion: number,
+    kind: string,
+    session: string,
+    content: unknown,
+  ) {
+    const payload = toB64url(new TextEncoder().encode(JSON.stringify(content)));
+    if (payload.length > 1_400_000) throw new Error('Hedera signing message exceeds the coordinator limit');
+    const digest = await sha256Hex(new TextEncoder().encode(payload));
+    const message = JSON.stringify([
+      'QDWallet-HederaRelay/v1',
+      walletId,
+      accountId,
+      keygenId,
+      membershipVersion,
+      kind,
+      session,
+      digest,
+    ]);
+    const signature = await this.deviceSign(message);
+    return this.json(
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/hedera/${encodeURIComponent(accountId)}`,
+      { keygenId, membershipVersion, kind, session, payload, signature },
+    );
+  }
+  hederaAccountInfo(accountId: string) {
+    return this.json<{
+      accountId: string;
+      network: 'testnet';
+      tinybars: string;
+      balanceTimestamp: string;
+      deleted: boolean;
+      receiverSignatureRequired: boolean;
+      key: { type: string; key: string };
+    }>('GET', `/v1/hedera/testnet/account/${encodeURIComponent(accountId)}/info`);
+  }
+  hederaSharedHistory(accountId: string, cursor?: string) {
+    return this.json<{
+      items: {
+        transactionId: string;
+        timestamp: string;
+        direction: 'in' | 'out' | 'self';
+        from: string;
+        to: string;
+        amountTinybars: string;
+        feeTinybars: string;
+        hbar: string;
+        status: 'confirmed' | 'failed';
+      }[];
+      nextCursor?: string | null;
+    }>(
+      'GET',
+      `/v1/hedera/testnet/account/${encodeURIComponent(accountId)}/history?exact=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+    );
+  }
+  hederaSharedReceipt(transactionId: string) {
+    return this.json<{
+      found: boolean;
+      transactionId: string;
+      result?: string;
+      entityId?: string;
+      feeTinybars?: string;
+      timestamp?: string;
+      intentMemo?: string;
+    }>('GET', `/v1/hedera/testnet/transaction/${encodeURIComponent(transactionId)}`);
   }
   btcBroadcast(network: BitcoinNetworkName, rawHex: string) {
     return this.json<ApiBtcBroadcastResult>('POST', `/v1/btc/${network}/broadcast`, { raw: rawHex });
@@ -396,10 +538,7 @@ export class ApiClient {
 
   /** Fetches the HBAR balance for a Hedera Testnet account. */
   hederaBalance(accountId: string) {
-    return this.json<ApiHederaBalance>(
-      'GET',
-      `/v1/hedera/testnet/account/${encodeURIComponent(accountId)}/balance`,
-    );
+    return this.json<ApiHederaBalance>('GET', `/v1/hedera/testnet/account/${encodeURIComponent(accountId)}/balance`);
   }
 
   /** Fetches one page of CRYPTOTRANSFER history for a Hedera Testnet account. */
@@ -422,6 +561,78 @@ export class ApiClient {
 
   // ---------- shared wallets ----------
 
+  nativeInventory(walletId: string) {
+    return this.json<{ accounts: NativeInventoryEntry[] }>(
+      'GET',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/native-inventory`,
+    );
+  }
+  nativeMigrations(walletId: string) {
+    return this.json<{ migrations: NativeMigrationView[] }>(
+      'GET',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/native-migrations`,
+    );
+  }
+  nativeMigration(id: string) {
+    return this.json<NativeMigrationView>('GET', `/v1/native-migrations/${encodeURIComponent(id)}`);
+  }
+  createNativeMigration(sourceWalletId: string, targetWalletId: string, mappings: NativeAccountMapping[]) {
+    return this.json<NativeMigrationView>(
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(sourceWalletId)}/native-migrations`,
+      { targetWalletId, mappings },
+    );
+  }
+  async approveNativeMigration(view: NativeMigrationView, side: 'source' | 'target') {
+    const signature = await this.deviceSign(nativeMigrationApprovalMessage(view.migration, side));
+    return this.json<NativeMigrationView>(
+      'POST',
+      `/v1/native-migrations/${encodeURIComponent(view.migration.manifest.id)}/confirm`,
+      { side, signature },
+    );
+  }
+  registerNativeMigration(
+    id: string,
+    intentId: string,
+    txid: string,
+    sourceProposal: unknown,
+    targetProposal?: unknown,
+  ) {
+    return this.json<NativeMigrationView>('POST', `/v1/native-migrations/${encodeURIComponent(id)}/attempts`, {
+      intentId,
+      txid,
+      sourceProposal,
+      ...(targetProposal ? { targetProposal } : {}),
+    });
+  }
+  checkNativeMigration(id: string) {
+    return this.json<NativeMigrationView>('POST', `/v1/native-migrations/${encodeURIComponent(id)}/check`);
+  }
+  cancelNativeMigration(id: string) {
+    return this.json<NativeMigrationView>('POST', `/v1/native-migrations/${encodeURIComponent(id)}/cancel`);
+  }
+  reviewNativeMigration(id: string, reviews: NativeMigrationReview[]) {
+    return this.json<NativeMigrationView>('POST', `/v1/native-migrations/${encodeURIComponent(id)}/review`, {
+      reviews,
+    });
+  }
+  nativeMigrationMessages(id: string, intentId: string, side: 'source' | 'target', session: string) {
+    return this.json<{
+      messages: {
+        id: string;
+        from: string;
+        kind: string;
+        session: string;
+        payload: string;
+        signature: string;
+        createdAt: string;
+      }[];
+    }>(
+      'GET',
+      `/v1/native-migrations/${encodeURIComponent(id)}/messages?intentId=${encodeURIComponent(intentId)}&side=${side}&session=${encodeURIComponent(session)}`,
+    );
+  }
+
   sharedWallets() {
     return this.json<{ wallets: SharedWallet[] }>('GET', '/v1/shared-wallets');
   }
@@ -433,14 +644,25 @@ export class ApiClient {
   }
   createInvitation(walletId: string, label: string) {
     return this.json<{ id: string; code: string; label: string; status: string; expiresAt: string }>(
-      'POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/invitations`, { label });
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/invitations`,
+      { label },
+    );
   }
   revokeInvitation(walletId: string, invitationId: string) {
-    return this.json<void>('POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/invitations/${encodeURIComponent(invitationId)}/revoke`);
+    return this.json<void>(
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/invitations/${encodeURIComponent(invitationId)}/revoke`,
+    );
   }
   previewInvitation(code: string) {
-    return this.json<{ walletId: string; walletName: string; invitedBy: string; activeParticipants: number; expiresAt: string }>(
-      'POST', '/v1/shared-wallet-invitations/preview', { code });
+    return this.json<{
+      walletId: string;
+      walletName: string;
+      invitedBy: string;
+      activeParticipants: number;
+      expiresAt: string;
+    }>('POST', '/v1/shared-wallet-invitations/preview', { code });
   }
   acceptInvitation(code: string, displayName: string) {
     return this.json<SharedWallet>('POST', '/v1/shared-wallet-invitations/accept', { code, displayName });
@@ -450,7 +672,9 @@ export class ApiClient {
   }
   revokeParticipant(walletId: string, participantId: string) {
     return this.json<{ membershipVersion: number; keyStatus: string }>(
-      'POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/participants/${encodeURIComponent(participantId)}/revoke`);
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/participants/${encodeURIComponent(participantId)}/revoke`,
+    );
   }
   createSharedAccount(walletId: string, name: string) {
     return this.json<SharedAccount>('POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/accounts`, { name });
@@ -472,12 +696,18 @@ export class ApiClient {
   async voteOnProposal(proposalId: string, decision: VoteDecision): Promise<Proposal> {
     const p = await this.proposal(proposalId);
     const n = await this.json<{ nonce: string; participantId: string; expiresAt: string }>(
-      'POST', `/v1/proposals/${encodeURIComponent(proposalId)}/vote-nonce`);
+      'POST',
+      `/v1/proposals/${encodeURIComponent(proposalId)}/vote-nonce`,
+    );
     const issuedAt = Math.floor(Date.now() / 1000);
     const message = await prepareVoteMessage(p, decision, n.participantId, n.nonce, issuedAt);
     const signature = b64url(await this.opts.deviceKey.sign(new TextEncoder().encode(message)));
     return this.json<Proposal>('POST', `/v1/proposals/${encodeURIComponent(proposalId)}/votes`, {
-      decision, nonce: n.nonce, issuedAt, digest: p.digest, signature,
+      decision,
+      nonce: n.nonce,
+      issuedAt,
+      digest: p.digest,
+      signature,
     });
   }
 
@@ -504,7 +734,8 @@ export class ApiClient {
     if (!kg.me) throw new KeygenRefusedError('This participant is not part of the key generation');
     const message = await keygenKeyMessage(walletId, kg, kg.me.participantId, kg.me.partyIndex, publicKey);
     return this.json<KeyGeneration>('POST', this.keygenPath(walletId, kg.id, '/encryption-key'), {
-      publicKey: toB64url(publicKey), signature: await this.deviceSign(message),
+      publicKey: toB64url(publicKey),
+      signature: await this.deviceSign(message),
     });
   }
 
@@ -521,14 +752,25 @@ export class ApiClient {
   ) {
     const hashed = [];
     for (const e of envelopes) {
-      await this.json<void>('PUT', this.keygenPath(walletId, kg.id, `/envelopes/${encodeURIComponent(e.participantId)}`), {
-        fingerprint, enc: toB64url(e.enc), ct: toB64url(e.ct),
+      await this.json<void>(
+        'PUT',
+        this.keygenPath(walletId, kg.id, `/envelopes/${encodeURIComponent(e.participantId)}`),
+        {
+          fingerprint,
+          enc: toB64url(e.enc),
+          ct: toB64url(e.ct),
+        },
+      );
+      hashed.push({
+        partyIndex: e.partyIndex,
+        participantId: e.participantId,
+        hashHex: await envelopeHashHex(e.enc, e.ct),
       });
-      hashed.push({ partyIndex: e.partyIndex, participantId: e.participantId, hashHex: await envelopeHashHex(e.enc, e.ct) });
     }
     const message = keygenDealMessage(walletId, kg, fingerprint, await envelopesDigestHex(hashed));
     return this.json<KeyGeneration>('POST', this.keygenPath(walletId, kg.id, '/commit'), {
-      fingerprint, signature: await this.deviceSign(message),
+      fingerprint,
+      signature: await this.deviceSign(message),
     });
   }
 
@@ -544,7 +786,8 @@ export class ApiClient {
     const hash = await envelopeHashHex(fromB64url(envelope.enc), fromB64url(envelope.ct));
     if (hash !== envelope.envelopeHash) throw new KeygenRefusedError('Envelope hash mismatch');
     return this.json<KeyGeneration>('POST', this.keygenPath(walletId, envelope.keygenId, '/acknowledge'), {
-      fingerprint: envelope.fingerprint, signature: await this.deviceSign(keygenAckMessage(envelope, hash)),
+      fingerprint: envelope.fingerprint,
+      signature: await this.deviceSign(keygenAckMessage(envelope, hash)),
     });
   }
 
@@ -555,15 +798,30 @@ export class ApiClient {
   // ---- networked Threshold Raccoon signing --------------------------------
 
   /** Registers (or attests) pk_j computed by this device's key worker. */
-  async registerAccountKey(walletId: string, account: { id: string; derivationIndex: number }, keygenId: string, publicKey: Uint8Array, publicKeyHash: string, address: string) {
+  async registerAccountKey(
+    walletId: string,
+    account: { id: string; derivationIndex: number },
+    keygenId: string,
+    publicKey: Uint8Array,
+    publicKeyHash: string,
+    address: string,
+  ) {
     const message = accountKeyMessage(walletId, account.id, account.derivationIndex, keygenId, publicKeyHash, address);
-    return this.json<AccountKeyInfo>('POST', `/v1/shared-wallets/${encodeURIComponent(walletId)}/accounts/${encodeURIComponent(account.id)}/key`, {
-      publicKey: toB64url(publicKey), signature: await this.deviceSign(message),
-    });
+    return this.json<AccountKeyInfo>(
+      'POST',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/accounts/${encodeURIComponent(account.id)}/key`,
+      {
+        publicKey: toB64url(publicKey),
+        signature: await this.deviceSign(message),
+      },
+    );
   }
 
   accountKey(walletId: string, accountId: string) {
-    return this.json<AccountKeyInfo>('GET', `/v1/shared-wallets/${encodeURIComponent(walletId)}/accounts/${encodeURIComponent(accountId)}/key`);
+    return this.json<AccountKeyInfo>(
+      'GET',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/accounts/${encodeURIComponent(accountId)}/key`,
+    );
   }
 
   /** Opens the proposal's signing session (or returns the open one). Selected signers only. */
@@ -572,26 +830,44 @@ export class ApiClient {
   }
 
   signingSession(sessionId: string, allPayloads = false) {
-    return this.json<SigningSession>('GET', `/v1/signing-sessions/${encodeURIComponent(sessionId)}${allPayloads ? '?payloads=all' : ''}`);
+    return this.json<SigningSession>(
+      'GET',
+      `/v1/signing-sessions/${encodeURIComponent(sessionId)}${allPayloads ? '?payloads=all' : ''}`,
+    );
   }
 
   /** Relays this signer's round message, device-signed over the transcript it computed itself. */
-  async submitRound(session: SigningSession, participantId: string, partyIndex: number, round: number, payload: Uint8Array, transcript: string) {
+  async submitRound(
+    session: SigningSession,
+    participantId: string,
+    partyIndex: number,
+    round: number,
+    payload: Uint8Array,
+    transcript: string,
+  ) {
     const message = await signRoundMessage(session.id, round, partyIndex, participantId, transcript, payload);
     return this.json<SigningSession>('POST', `/v1/signing-sessions/${encodeURIComponent(session.id)}/rounds/${round}`, {
-      payload: toB64url(payload), transcriptHash: transcript, signature: await this.deviceSign(message),
+      payload: toB64url(payload),
+      transcriptHash: transcript,
+      signature: await this.deviceSign(message),
     });
   }
 
   async abortSigning(session: SigningSession, participantId: string, reason: SigningAbortReason) {
     return this.json<SigningSession>('POST', `/v1/signing-sessions/${encodeURIComponent(session.id)}/abort`, {
-      reason, signature: await this.deviceSign(signAbortMessage(session.id, participantId, reason)),
+      reason,
+      signature: await this.deviceSign(signAbortMessage(session.id, participantId, reason)),
     });
   }
 
   /** Relayer diagnostics per chain: RPC, relayer address and balance, contracts. Public, no key material. */
   async relayerStatus(opts: { refresh?: boolean } = {}) {
-    return this.json<{ chains: RelayerChainStatus[] }>('GET', `/v1/relayers${opts.refresh ? '?refresh=1' : ''}`, undefined, { auth: false });
+    return this.json<{ chains: RelayerChainStatus[] }>(
+      'GET',
+      `/v1/relayers${opts.refresh ? '?refresh=1' : ''}`,
+      undefined,
+      { auth: false },
+    );
   }
 
   /** Gas needed to execute a proposal now, both balances and whether it can proceed (members only; read-only). */
@@ -601,7 +877,10 @@ export class ApiClient {
 
   /** A shared wallet's own transaction history on one chain, from the chain index (members only). */
   async sharedWalletHistory(walletId: string, chainId: number) {
-    return this.json<WalletHistory>('GET', `/v1/shared-wallets/${encodeURIComponent(walletId)}/history?chainId=${chainId}`);
+    return this.json<WalletHistory>(
+      'GET',
+      `/v1/shared-wallets/${encodeURIComponent(walletId)}/history?chainId=${chainId}`,
+    );
   }
 
   /** Gas service account history on one chain: recharges and gas payments, from chain receipts. */

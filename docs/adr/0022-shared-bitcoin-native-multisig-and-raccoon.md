@@ -1,6 +1,6 @@
 # ADR 0022: Shared Bitcoin multisignature with Threshold Raccoon approval
 
-**Status:** Approved by the project owner; implemented as a Testnet4 research preview.
+**Status:** Approved by the project owner; implemented for Testnet4; release hardening follows ADR 0024.
 **Date:** 2026-11-24.
 
 ## Decision and security boundary
@@ -26,7 +26,7 @@ The custom path starts at `m/48'/coin'/0'/2'` followed by eight hardened indexes
 formed from a SHA-256 hash of the wallet/account/key-generation/membership/network
 context. It is a versioned project namespace, not a claim of standard BIP48 wallet
 recovery compatibility. Public roots are Testnet extended public keys; branch 0
-holds the receive key and branch 1 holds fresh change keys. This preview exposes
+holds the receive key and branch 1 holds fresh change keys. The current version exposes
 receive index 0, with change indexes 0–9999 and gap discovery of 20 addresses.
 
 Each device proves possession of its native key over the enrollment context.
@@ -38,9 +38,9 @@ The coordinator cannot substitute a key unnoticed if this comparison is performe
 
 Native keys are sorted for each output. The native threshold is a strict majority
 of 2–5 members; the Raccoon threshold is the existing provisioned key threshold,
-which must be at least two. Those thresholds can differ. The UI currently selects
-the first Raccoon threshold number of party indexes; alternate signer selection
-needs a later UI extension. A typical supported setup is 2-of-3 for both layers.
+which must be at least two. Those thresholds can differ. The UI lets the proposer
+select the required number of Raccoon signers. A typical supported setup is 2-of-3
+for both layers.
 
 ## Proposal, authorization and signing
 
@@ -110,3 +110,22 @@ and replay behavior independently, test adversarial coordinators and members,
 verify real Testnet4 journeys with explicit authorization, and measure signing
 latency, bandwidth, browser resource use and storage growth. No production
 security certification or public-testnet transaction is claimed by this ADR.
+
+## 26 November release-hardening follow-up
+
+Version 2 signing sessions include fresh randomness from every selected signer.
+Workers bind their own contribution to the session and keep permanent burn
+records. A stale backup cannot silently revive an old secret signing session.
+Encrypted per-participant export/import now includes the pinned native policy,
+share context, change cursor, input reservations and saved payment evidence.
+Import revalidates Raccoon/native signatures and exact signed bytes, preserves
+local burn records, and drops old consents and secret rounds. A recovery phrase
+alone still cannot recreate a Raccoon share or server-side device authorization.
+
+The recovery UI provides history, explicit reconciliation and identical-byte
+resubmission of a saved fully signed transaction. Software proposal expiry does
+not expire a Bitcoin signature; not-found results never free signed inputs or
+rewind the change cursor. An exhausted cursor stays recoverable but cannot
+allocate an address outside the supported range. The approved native migration
+workflow and its nominated-coin/late-funds semantics are in [ADR 0024](0024-native-shared-wallet-release-hardening.md).
+Public Testnet4 transfers and independent release review remain unverified.

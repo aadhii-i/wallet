@@ -46,11 +46,12 @@ type request struct {
 	Signature         string `json:"signature"`
 }
 type Relay struct {
-	st       store.Store
-	pool     *pgxpool.Pool
-	mu       sync.Mutex
-	messages map[string][]Message
-	snapshot string
+	migrationGuard func(context.Context, string, string, string, string, string) error
+	st             store.Store
+	pool           *pgxpool.Pool
+	mu             sync.Mutex
+	messages       map[string][]Message
+	snapshot       string
 }
 
 func New(st store.Store, pool *pgxpool.Pool, snapshot string) (*Relay, error) {
@@ -64,6 +65,39 @@ func New(st store.Store, pool *pgxpool.Pool, snapshot string) (*Relay, error) {
 		}
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return nil, err
+		}
+	}
+	// Restore guards for pre-existing memory snapshots before serving requests.
+	if pool == nil {
+		for scope, messages := range r.messages {
+			parts := strings.Split(scope, "|")
+			if len(parts) != 4 {
+				return nil, errors.New("invalid native relay scope")
+			}
+			walletID, err := uuid.Parse(parts[0])
+			if err != nil {
+				return nil, err
+			}
+			wallet, err := st.SharedWallets().GetWallet(context.Background(), walletID)
+			if err != nil {
+				return nil, err
+			}
+			members, err := st.SharedWallets().ListMembers(context.Background(), walletID)
+			if err != nil {
+				return nil, err
+			}
+			for _, message := range messages {
+				if message.Kind != "policy" {
+					continue
+				}
+				for _, member := range members {
+					if member.ID.String() == message.From && member.Role == store.RoleOwner {
+						if err = st.SharedWallets().LockNativeCustody(context.Background(), walletID, wallet.MembershipVersion); err != nil {
+							return nil, err
+						}
+					}
+				}
+			}
 		}
 	}
 	return r, nil
@@ -148,6 +182,20 @@ func (r *Relay) post(w http.ResponseWriter, req *http.Request) {
 	if err != nil || e != nil || !valid || len(signature) != 64 || !ecdsa.Verify(key, digest[:], new(big.Int).SetBytes(signature[:32]), new(big.Int).SetBytes(signature[32:])) {
 		httpx.Forbidden(w, req, "BAD_SIGNATURE", "signing message is not from the registered device")
 		return
+	}
+	// The owner's signed policy confirmation commits to native custody. The
+	// store locks against roster edits atomically before publishing that message.
+	if q.Kind == "policy" && member.Role == store.RoleOwner {
+		if err := r.st.SharedWallets().LockNativeCustody(req.Context(), wallet.ID, wallet.MembershipVersion); err != nil {
+			httpx.Conflict(w, req, "STALE_MEMBERSHIP", "Refresh the shared wallet before confirming native custody")
+			return
+		}
+	}
+	if r.migrationGuard != nil {
+		if err := r.migrationGuard(req.Context(), wallet.ID.String(), chi.URLParam(req, "accountId"), q.Kind, q.Session, q.Payload); err != nil {
+			httpx.Conflict(w, req, "NATIVE_MIGRATION_IN_PROGRESS", err.Error())
+			return
+		}
 	}
 	id := sha256.Sum256([]byte(scope + "|" + member.ID.String() + "|" + q.Kind + "|" + q.Session + "|" + q.Payload))
 	message := Message{ID: hex.EncodeToString(id[:]), From: member.ID.String(), Kind: q.Kind, Session: q.Session, Payload: q.Payload, Signature: q.Signature, CreatedAt: time.Now().UTC()}
@@ -268,4 +316,75 @@ func (r *Relay) append(ctx context.Context, scope string, message Message) error
 		}
 	}
 	return nil
+}
+
+// SetMigrationGuard is called once during startup, before requests are served.
+func (r *Relay) SetMigrationGuard(guard func(context.Context, string, string, string, string, string) error) {
+	r.migrationGuard = guard
+}
+
+// NativeRooms supplies public enrollment/policy snapshots to the migration
+// coordinator. Callers must authenticate the wallet before exposing them.
+func (r *Relay) NativeRooms(ctx context.Context, walletID string) (map[string]json.RawMessage, error) {
+	grouped := map[string][]Message{}
+	if r.pool != nil {
+		rows, err := r.pool.Query(ctx, "SELECT scope,body FROM bitcoin_shared_messages WHERE scope LIKE $1 AND session='enrollment' ORDER BY scope,created_at LIMIT 4097", walletID+"|%")
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		count := 0
+		for rows.Next() {
+			count++
+			if count > 4096 {
+				return nil, errors.New("native inventory limit")
+			}
+			var scope string
+			var body []byte
+			var message Message
+			if err = rows.Scan(&scope, &body); err != nil {
+				return nil, err
+			}
+			if err = json.Unmarshal(body, &message); err != nil {
+				return nil, err
+			}
+			grouped[scope] = append(grouped[scope], message)
+		}
+		if err = rows.Err(); err != nil {
+			return nil, err
+		}
+	} else {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for scope, messages := range r.messages {
+			if strings.HasPrefix(scope, walletID+"|") {
+				for _, message := range messages {
+					if message.Session == "enrollment" {
+						grouped[scope] = append(grouped[scope], message)
+					}
+				}
+			}
+		}
+	}
+	result := map[string]json.RawMessage{}
+	for scope, messages := range grouped {
+		body, err := json.Marshal(messages)
+		if err != nil {
+			return nil, err
+		}
+		result[scope] = body
+	}
+	return result, nil
+}
+
+func (r *Relay) SessionMessages(ctx context.Context, wallet, account, keygen string, epoch int64, session string) (json.RawMessage, error) {
+	if !validSession(session) {
+		return nil, errors.New("invalid signing session")
+	}
+	scope := strings.Join([]string{wallet, account, keygen, big.NewInt(epoch).String()}, "|")
+	messages, err := r.read(ctx, scope, session)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(messages)
 }

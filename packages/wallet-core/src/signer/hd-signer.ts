@@ -68,7 +68,7 @@ export class HDSigner implements Signer {
       throw new SignerError('UNSUPPORTED', 'Bitcoin PSBTs are signed by the Bitcoin signer');
     }
 
-    if (payload.kind === 'hedera-transfer') {
+    if (payload.kind === 'hedera-transfer' || payload.kind === 'hedera-shared') {
       throw new SignerError('UNSUPPORTED', 'Hedera transfers are signed by the key worker');
     }
 

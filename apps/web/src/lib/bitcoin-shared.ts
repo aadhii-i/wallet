@@ -38,29 +38,31 @@ export async function discoverSharedBitcoin(policy: BitcoinSharedPolicy) {
     } else empty++;
     if (used || i < plan.next) paths.push({ branch: 1, index: i, address });
     if (empty >= 20 && i >= plan.next - 1) break;
-    if (i === 9999) throw new Error('Shared Bitcoin recovery scan limit reached');
   }
   const updated = await vault.call('btcSharedPlan', { policy, highestUsed });
   const unavailable = new Set(updated.unavailable),
-    coins: SharedBitcoinCoin[] = [];
+    coins: SharedBitcoinCoin[] = [], allCoins: SharedBitcoinCoin[] = [];
   let total = 0n;
   for (const path of paths) {
     for (const coin of await source.getUtxos(path.address)) {
       total += coin.value;
+      allCoins.push({...coin, branch:path.branch, addressIndex:path.index});
       if (!unavailable.has(`${coin.txid.toLowerCase()}:${coin.vout}`))
         coins.push({ ...coin, branch: path.branch, addressIndex: path.index });
     }
   }
   return {
     coins,
+    allCoins,
     total,
     next: updated.next,
+    addresses: paths.map(path => path.address),
     available: coins.filter((c) => c.confirmations > 0).reduce((n, c) => n + c.value, 0n),
   };
 }
 
 export async function hydrateSharedBitcoinCoins(coins: SharedBitcoinCoin[]): Promise<SharedBitcoinCoin[]> {
-  if (coins.length > 100) throw new Error('Too many available shared coins for this preview');
+  if (coins.length > 100) throw new Error('Select at most 100 Bitcoin inputs for one payment');
   const source = createBitcoinDataSource('testnet4'),
     previous = new Map<string, string>(),
     result: SharedBitcoinCoin[] = [];
@@ -77,9 +79,10 @@ export async function hydrateSharedBitcoinCoins(coins: SharedBitcoinCoin[]): Pro
 export async function recheckSharedBitcoinProposal(
   policy: BitcoinSharedPolicy,
   proposal: SharedBitcoinProposal,
+  saved = false,
 ): Promise<void> {
   await checkSharedBitcoinNetwork();
-  const tx = validateSharedBitcoinProposal(policy, proposal),
+  const tx = validateSharedBitcoinProposal(policy, proposal, saved ? Math.min(Date.now(), proposal.expiresAt - 1) : Date.now()),
     source = createBitcoinDataSource('testnet4');
   const cache = new Map<string, Awaited<ReturnType<typeof source.getUtxos>>>();
   for (let i = 0; i < tx.inputsLength; i++) {
